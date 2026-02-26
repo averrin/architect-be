@@ -19,7 +19,7 @@ async def fetch_jules_sessions(api_key):
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
-                logger.debug(f"Jules API returned {resp.status_code}")
+                logger.debug(f"Jules API returned {resp.status_code} for fetch_jules_sessions")
                 return []
             return resp.json().get("sessions", [])
     except Exception as e:
@@ -27,7 +27,7 @@ async def fetch_jules_sessions(api_key):
         return []
 
 async def update_jules_sessions(uid: str, user_settings: dict):
-    # logger.debug(f"Updating Jules sessions for {uid}")
+    # logger.debug(f"Checking Jules sessions for {uid}")
     db = get_db()
 
     if not user_settings:
@@ -68,16 +68,19 @@ async def update_jules_sessions(uid: str, user_settings: dict):
     if not has_active_sessions:
         time_diff = current_time_ts - last_updated
         if time_diff < (settings.JULES_SLOW_INTERVAL_MINUTES * 60):
-            # logger.debug(f"Skipping Jules poll for {uid} (slow mode)")
+            logger.debug(f"Skipping Jules poll for {uid} (slow mode, last active {int(time_diff)}s ago)")
             return
 
     sessions_data = await fetch_jules_sessions(api_key)
 
     if not sessions_data and not has_active_sessions:
+        logger.debug(f"No sessions found for {uid}")
         return
 
     sessions = []
     fcm_token = None
+
+    notifications_sent = 0
 
     for s in sessions_data:
         session_id = s.get("name", "").split("/")[-1] if "name" in s else ""
@@ -106,6 +109,7 @@ async def update_jules_sessions(uid: str, user_settings: dict):
 
                 # Notify on interesting state changes
                 if current_state == "ACTIVE":
+                     logger.info(f"Jules session {session_id} became ACTIVE for {uid}. Sending notification.")
                      send_fcm_message(fcm_token, {
                         "type": "jules_session",
                         "status": "active",
@@ -115,9 +119,11 @@ async def update_jules_sessions(uid: str, user_settings: dict):
                         "title": "Jules Session Active",
                         "body": f"Session '{s.get('title', 'Untitled')}' is now active."
                     })
+                     notifications_sent += 1
         elif not old_session:
             # New session found
             if not fcm_token: fcm_token = get_fcm_token(uid, db)
+            logger.info(f"New Jules session {session_id} found for {uid}. Sending notification.")
             send_fcm_message(fcm_token, {
                 "type": "jules_session",
                 "status": "created",
@@ -127,14 +133,14 @@ async def update_jules_sessions(uid: str, user_settings: dict):
                 "title": "New Jules Session",
                 "body": f"Session '{s.get('title', 'Untitled')}' created."
             })
-
+            notifications_sent += 1
 
     if sessions:
         sessions_ref.set({
             "sessions": sessions,
             "updatedAt": firestore.SERVER_TIMESTAMP
         })
-        logger.info(f"Jules sessions updated for {uid}")
+        logger.info(f"Jules sessions updated for {uid}: {len(sessions)} sessions (sent {notifications_sent} notifications)")
 
 async def run_jules_job():
     logger.info("Starting Jules job")

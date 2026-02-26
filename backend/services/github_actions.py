@@ -44,11 +44,11 @@ async def fetch_artifact_url(client, owner, repo, token, run_id):
                 async with client.stream("GET", download_url, headers=headers, follow_redirects=True) as response:
                     return str(response.url)
             except Exception as e:
-                logger.error(f"Error streaming artifact URL: {e}")
+                logger.error(f"Error streaming artifact URL for run {run_id}: {e}")
                 return None
         return None
     except Exception as e:
-        logger.error(f"GitHub artifact fetch error: {e}")
+        logger.error(f"GitHub artifact fetch error for run {run_id}: {e}")
         return None
 
 async def update_github_watcher(uid: str, user_settings: dict):
@@ -113,8 +113,10 @@ async def update_github_watcher(uid: str, user_settings: dict):
     if not has_active_runs:
         time_diff = current_time_ts - last_updated
         if time_diff < (settings.GITHUB_WATCHER_SLOW_INTERVAL_MINUTES * 60):
-            # logger.debug(f"Skipping GitHub poll for {uid} (slow mode)")
+            logger.debug(f"Skipping GitHub poll for {uid} (slow mode, last active {int(time_diff)}s ago)")
             return
+
+    logger.info(f"Checking GitHub runs for {uid} on {len(unique_repos)} repos")
 
     # Aggregate runs from all repos concurrently
     all_runs = []
@@ -126,11 +128,14 @@ async def update_github_watcher(uid: str, user_settings: dict):
             all_runs.extend(res)
 
         if not all_runs and not has_active_runs:
+            logger.debug(f"No active runs found for {uid}")
             return
 
         watched_runs = {}
         current_time_ms = int(current_time_ts * 1000)
         fcm_token = None
+
+        notifications_sent = 0
 
         for run in all_runs:
             run_id = str(run["id"])
@@ -164,6 +169,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
 
             if notify_start:
                 if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                logger.info(f"GitHub run {run_id} started on {repo}. Sending notification.")
                 send_fcm_message(fcm_token, {
                     "type": "github_run",
                     "status": "started",
@@ -176,13 +182,20 @@ async def update_github_watcher(uid: str, user_settings: dict):
                     "title": f"Run Started: {run['name']}",
                     "body": f"Repo: {repo}\nBranch: {head_branch}\nCommit: {commit_message}"
                 })
+                notifications_sent += 1
 
             artifact_url = old_run.get("artifactUrl") if old_run else None
 
             if notify_complete:
+                logger.info(f"GitHub run {run_id} completed on {repo} ({conclusion}). Sending notification.")
                 # Fetch artifact URL if successful
                 if conclusion == "success":
+                    logger.debug(f"Fetching artifact URL for run {run_id}")
                     artifact_url = await fetch_artifact_url(client, owner, repo, token, run_id)
+                    if artifact_url:
+                        logger.debug(f"Found artifact URL: {artifact_url}")
+                    else:
+                        logger.debug(f"No artifact URL found for {run_id}")
 
                 if not fcm_token: fcm_token = get_fcm_token(uid, db)
 
@@ -203,6 +216,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
                     "title": f"Run {conclusion.title()}: {run['name']}",
                     "body": f"GitHub Action completed on {repo}"
                 })
+                notifications_sent += 1
 
             start_time = 0
             try:
@@ -233,7 +247,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
             "runs": watched_runs,
             "updatedAt": firestore.SERVER_TIMESTAMP
         })
-        logger.info(f"GitHub runs updated for {uid}")
+        logger.info(f"GitHub runs updated for {uid}: {len(watched_runs)} runs tracked (sent {notifications_sent} notifications)")
 
 async def run_github_job():
     logger.info("Starting GitHub job")
