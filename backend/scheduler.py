@@ -17,8 +17,8 @@ def start_scheduler():
     scheduler.add_job(run_weather_job, 'interval', minutes=settings.WEATHER_INTERVAL_MINUTES)
     scheduler.add_job(run_news_job, 'interval', minutes=settings.NEWS_INTERVAL_MINUTES)
     scheduler.add_job(run_buxfer_job, 'interval', minutes=settings.BUXFER_INTERVAL_MINUTES)
-    scheduler.add_job(run_github_job, 'interval', minutes=settings.GITHUB_WATCHER_INTERVAL_MINUTES)
-    scheduler.add_job(run_jules_job, 'interval', minutes=settings.JULES_INTERVAL_MINUTES)
+    scheduler.add_job(run_github_job, 'interval', seconds=settings.GITHUB_WATCHER_INTERVAL_SECONDS)
+    scheduler.add_job(run_jules_job, 'interval', seconds=settings.JULES_INTERVAL_SECONDS)
     scheduler.add_job(run_fcm_heartbeat_job, 'interval', minutes=settings.FCM_HEARTBEAT_INTERVAL_MINUTES)
 
     # Daily forecast at specific hour
