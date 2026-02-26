@@ -13,37 +13,40 @@ import asyncio
 GITHUB_API = "https://api.github.com"
 settings = get_settings()
 
-async def fetch_workflow_runs(owner, repo, token):
+async def fetch_workflow_runs(client, owner, repo, token):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, params={"per_page": 10})
-            resp.raise_for_status()
-            return resp.json().get("workflow_runs", [])
+        resp = await client.get(url, headers=headers, params={"per_page": 10})
+        resp.raise_for_status()
+        runs = resp.json().get("workflow_runs", [])
+        for r in runs:
+            r["_owner"] = owner
+            r["_repo"] = repo
+        return runs
     except Exception as e:
-        logger.error(f"GitHub fetch error: {e}")
+        logger.error(f"GitHub fetch error for {owner}/{repo}: {e}")
         return []
 
-async def fetch_artifact_url(owner, repo, token, run_id):
+async def fetch_artifact_url(client, owner, repo, token, run_id):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            artifacts = resp.json().get("artifacts", [])
-            if artifacts:
-                # Get the first artifact's archive download URL
-                download_url = artifacts[0]["archive_download_url"]
-                # Follow redirect to get the actual storage URL
-                resp = await client.get(download_url, headers=headers, follow_redirects=True)
-                # If we followed redirects, the final URL is in resp.url
-                # However, for private repos, this might need authentication.
-                # GitHub Actions artifacts usually expire and are zipped.
-                # The archive_download_url redirects to a blob storage URL which is temporary.
-                return str(resp.url)
-            return None
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        artifacts = resp.json().get("artifacts", [])
+        if artifacts:
+            # Get the first artifact's archive download URL
+            download_url = artifacts[0]["archive_download_url"]
+            # Stream the request to avoid downloading the body, but follow redirects to get final URL
+            # Note: httpx client.stream context manager automatically closes the response
+            try:
+                async with client.stream("GET", download_url, headers=headers, follow_redirects=True) as response:
+                    return str(response.url)
+            except Exception as e:
+                logger.error(f"Error streaming artifact URL: {e}")
+                return None
+        return None
     except Exception as e:
         logger.error(f"GitHub artifact fetch error: {e}")
         return None
@@ -56,12 +59,33 @@ async def update_github_watcher(uid: str, user_settings: dict):
         logger.debug(f"No settings for user {uid}")
         return
 
-    owner = user_settings.get("julesOwner")
-    repo = user_settings.get("julesRepo")
     token = user_settings.get("julesApiKey")
 
-    if not owner or not repo or not token:
+    if not token:
         logger.debug(f"No GitHub watcher settings for user {uid}")
+        return
+
+    # Fetch active repos from Jules sessions
+    sessions_ref = db.document(f"users/{uid}/jules/sessions")
+    sessions_snap = sessions_ref.get()
+
+    unique_repos = set()
+
+    if sessions_snap.exists:
+        sessions_data = sessions_snap.to_dict().get("sessions", [])
+        for session in sessions_data:
+            gh_meta = session.get("githubMetadata")
+            if gh_meta and gh_meta.get("owner") and gh_meta.get("repo"):
+                unique_repos.add((gh_meta["owner"], gh_meta["repo"]))
+
+    # Fallback to settings if no sessions found (or if user wants specific repo watched)
+    manual_owner = user_settings.get("julesOwner")
+    manual_repo = user_settings.get("julesRepo")
+    if manual_owner and manual_repo:
+        unique_repos.add((manual_owner, manual_repo))
+
+    if not unique_repos:
+        # logger.debug(f"No repos to watch for user {uid}")
         return
 
     # Check existing state to determine polling frequency
@@ -75,7 +99,6 @@ async def update_github_watcher(uid: str, user_settings: dict):
     if watched_runs_snap.exists:
         data = watched_runs_snap.to_dict()
         old_runs = data.get("runs", {})
-        # Check if 'updatedAt' exists and is not None
         if data.get("updatedAt"):
              last_updated = data.get("updatedAt").timestamp()
 
@@ -87,56 +110,79 @@ async def update_github_watcher(uid: str, user_settings: dict):
     current_time_ts = time.time()
 
     # Determine if we should skip this poll
-    # If no active runs, poll slowly
     if not has_active_runs:
         time_diff = current_time_ts - last_updated
         if time_diff < (settings.GITHUB_WATCHER_SLOW_INTERVAL_MINUTES * 60):
             # logger.debug(f"Skipping GitHub poll for {uid} (slow mode)")
             return
 
-    runs = await fetch_workflow_runs(owner, repo, token)
+    # Aggregate runs from all repos concurrently
+    all_runs = []
 
-    # If no runs found, and we didn't have active runs, we are done
-    if not runs and not has_active_runs:
-         return
+    async with httpx.AsyncClient() as client:
+        tasks = [fetch_workflow_runs(client, owner, repo, token) for owner, repo in unique_repos]
+        results = await asyncio.gather(*tasks)
+        for res in results:
+            all_runs.extend(res)
 
-    watched_runs = {}
-    current_time_ms = int(current_time_ts * 1000)
+        if not all_runs and not has_active_runs:
+            return
 
-    fcm_token = None
+        watched_runs = {}
+        current_time_ms = int(current_time_ts * 1000)
+        fcm_token = None
 
-    for run in runs:
-        run_id = str(run["id"])
-        status = run["status"]
-        conclusion = run["conclusion"]
+        for run in all_runs:
+            run_id = str(run["id"])
+            status = run["status"]
+            conclusion = run["conclusion"]
+            owner = run.get("_owner")
+            repo = run.get("_repo")
 
-        old_run = old_runs.get(run_id)
+            old_run = old_runs.get(run_id)
 
-        # State transition detection
-        if old_run:
-            old_status = old_run.get("status")
-            # old_conclusion = old_run.get("conclusion")
+            # Determine if we need to notify
+            notify_start = False
+            notify_complete = False
 
-            # Queued -> In Progress
-            if old_status == "queued" and status == "in_progress":
+            if old_run:
+                old_status = old_run.get("status")
+                if old_status == "queued" and status == "in_progress":
+                    notify_start = True
+                if old_status != "completed" and status == "completed":
+                    notify_complete = True
+            else:
+                # New run detected
+                if status == "in_progress":
+                    notify_start = True
+                if status == "completed":
+                    notify_complete = True
+
+            head_commit = run.get("head_commit")
+            commit_message = head_commit["message"] if head_commit else "No commit message"
+            head_branch = run.get("head_branch")
+
+            if notify_start:
                 if not fcm_token: fcm_token = get_fcm_token(uid, db)
                 send_fcm_message(fcm_token, {
                     "type": "github_run",
                     "status": "started",
                     "runId": run_id,
                     "repo": repo,
-                    "name": run["name"]
+                    "name": run["name"],
+                    "headBranch": head_branch,
+                    "headCommitMessage": commit_message
                 }, notification={
                     "title": f"Run Started: {run['name']}",
-                    "body": f"GitHub Action started on {repo}"
+                    "body": f"Repo: {repo}\nBranch: {head_branch}\nCommit: {commit_message}"
                 })
 
-            # Any -> Completed
-            if old_status != "completed" and status == "completed":
-                artifact_url = None
-                # Fetch artifact if successful or we just want artifacts for any completion
+            artifact_url = old_run.get("artifactUrl") if old_run else None
+
+            if notify_complete:
+                # Fetch artifact URL if successful
                 if conclusion == "success":
-                     artifact_url = await fetch_artifact_url(owner, repo, token, run_id)
+                    artifact_url = await fetch_artifact_url(client, owner, repo, token, run_id)
 
                 if not fcm_token: fcm_token = get_fcm_token(uid, db)
 
@@ -146,7 +192,9 @@ async def update_github_watcher(uid: str, user_settings: dict):
                     "conclusion": conclusion,
                     "runId": run_id,
                     "repo": repo,
-                    "name": run["name"]
+                    "name": run["name"],
+                    "headBranch": head_branch,
+                    "headCommitMessage": commit_message
                 }
                 if artifact_url:
                     msg_data["artifactUrl"] = artifact_url
@@ -156,56 +204,29 @@ async def update_github_watcher(uid: str, user_settings: dict):
                     "body": f"GitHub Action completed on {repo}"
                 })
 
-                # We need to store the artifact URL in the new state so we don't lose it
-                # But wait, we construct the new state below.
+            start_time = 0
+            try:
+                dt = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+                start_time = int(dt.timestamp() * 1000)
+            except:
+                pass
 
-        start_time = 0
-        try:
-             dt = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
-             start_time = int(dt.timestamp() * 1000)
-        except:
-             pass
-
-        # Preserve artifact URL if we already had it and it's not being re-fetched this cycle
-        # Or if we just fetched it above (we didn't store it in a variable accessible here easily yet)
-
-        # Re-fetch artifact URL if completed and we don't have it?
-        # For simplicity, if it's completed now, let's try to get it if we don't have it.
-        artifact_url = old_run.get("artifactUrl") if old_run else None
-
-        # If it just completed, we might have fetched it in the transition block?
-        # Let's refine the logic.
-
-        if status == "completed":
-            # If it just transitioned, we should fetch.
-            # If it was already completed but we don't have URL, maybe fetch? (Might be expensive to do every time)
-            # Let's only fetch on transition to completed.
-            if old_run and old_run.get("status") != "completed":
-                 # We already fetched in the block above, need to duplicate logic or restructure?
-                 # Let's restructure slightly by moving fetch here.
-                 if conclusion == "success":
-                     artifact_url = await fetch_artifact_url(owner, repo, token, run_id)
-            elif not old_run:
-                 # New run that is already completed (missed the transition)
-                 if conclusion == "success":
-                     artifact_url = await fetch_artifact_url(owner, repo, token, run_id)
-
-        watched_runs[run_id] = WatchedRunData(
-            runId=run["id"],
-            name=run["name"],
-            headBranch=run["head_branch"],
-            headCommitMessage=run["head_commit"]["message"] if run.get("head_commit") else None,
-            status=status,
-            conclusion=conclusion,
-            estimatedDuration=0,
-            startTime=start_time,
-            lastChecked=current_time_ms,
-            progress=0.0,
-            artifactUrl=artifact_url,
-            htmlUrl=run["html_url"],
-            owner=owner,
-            repo=repo
-        ).model_dump()
+            watched_runs[run_id] = WatchedRunData(
+                runId=run["id"],
+                name=run["name"],
+                headBranch=head_branch,
+                headCommitMessage=commit_message if head_commit else None,
+                status=status,
+                conclusion=conclusion,
+                estimatedDuration=0,
+                startTime=start_time,
+                lastChecked=current_time_ms,
+                progress=0.0,
+                artifactUrl=artifact_url,
+                htmlUrl=run["html_url"],
+                owner=owner,
+                repo=repo
+            ).model_dump()
 
     if watched_runs:
         watched_runs_ref.set({
