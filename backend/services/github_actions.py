@@ -4,6 +4,7 @@ from models.github import WatchedRunData
 from firebase_admin import firestore
 import time
 from datetime import datetime
+from logger import logger
 
 GITHUB_API = "https://api.github.com"
 
@@ -16,15 +17,17 @@ async def fetch_workflow_runs(owner, repo, token):
             resp.raise_for_status()
             return resp.json().get("workflow_runs", [])
     except Exception as e:
-        print(f"GitHub fetch error: {e}")
+        logger.error(f"GitHub fetch error: {e}")
         return []
 
 async def update_github_watcher(uid: str):
+    logger.debug(f"Updating GitHub watcher for {uid}")
     db = get_db()
     settings_ref = db.document(f"users/{uid}/settings/current")
     settings_snap = settings_ref.get()
 
     if not settings_snap.exists:
+        logger.debug(f"No settings for user {uid}")
         return
 
     user_settings = settings_snap.to_dict()
@@ -33,6 +36,7 @@ async def update_github_watcher(uid: str):
     token = user_settings.get("julesApiKey")
 
     if not owner or not repo or not token:
+        logger.debug(f"No GitHub watcher settings for user {uid}")
         return
 
     runs = await fetch_workflow_runs(owner, repo, token)
@@ -74,10 +78,12 @@ async def update_github_watcher(uid: str):
             "runs": watched_runs,
             "updatedAt": firestore.SERVER_TIMESTAMP
         })
-        print(f"GitHub runs updated for {uid}")
+        logger.info(f"GitHub runs updated for {uid}")
 
 async def run_github_job():
+    logger.info("Starting GitHub job")
     db = get_db()
     users = db.collection("users").stream()
     for user in users:
         await update_github_watcher(user.id)
+    logger.info("GitHub job completed")

@@ -3,17 +3,19 @@ from firebase_client import get_db
 from models.weather import WeatherData, HourlyWeatherData
 from utils.weather_codes import get_weather_info
 from firebase_admin import firestore
+from logger import logger
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 
 async def update_weather(uid: str):
+    logger.debug(f"Updating weather for {uid}")
     db = get_db()
     # Read settings
     settings_ref = db.document(f"users/{uid}/settings/current")
     settings_snap = settings_ref.get()
 
     if not settings_snap.exists:
-        # print(f"No settings for user {uid}")
+        logger.debug(f"No settings for user {uid}")
         return
 
     settings_data = settings_snap.to_dict()
@@ -26,7 +28,7 @@ async def update_weather(uid: str):
         lon = settings_data.get("lon")
 
     if not lat or not lon:
-        # print(f"No location set for user {uid}")
+        logger.debug(f"No location set for user {uid}")
         return
 
     params = {
@@ -43,7 +45,7 @@ async def update_weather(uid: str):
             resp.raise_for_status()
             data = resp.json()
     except Exception as e:
-        print(f"Failed to fetch weather for {uid}: {e}")
+        logger.error(f"Failed to fetch weather for {uid}: {e}")
         return
 
     # Process data
@@ -95,10 +97,12 @@ async def update_weather(uid: str):
         "data": forecast_data,
         "updatedAt": firestore.SERVER_TIMESTAMP
     })
-    print(f"Weather updated for {uid}")
+    logger.info(f"Weather updated for {uid}")
 
 async def run_weather_job():
+    logger.info("Starting weather job")
     db = get_db()
     users = db.collection("users").stream()
     for user in users:
         await update_weather(user.id)
+    logger.info("Weather job completed")

@@ -4,6 +4,7 @@ from config import get_settings
 from firebase_client import init_firebase
 from scheduler import start_scheduler
 from commands.listener import start_listener
+from logger import logger
 import threading
 import asyncio
 
@@ -28,11 +29,29 @@ JOBS = {
     "models_sync": run_models_sync_job
 }
 
+async def run_initial_jobs():
+    logger.info("Triggering initial jobs...")
+    try:
+        await run_weather_job()
+        await run_news_job()
+        await run_buxfer_job()
+        await run_github_job()
+        await run_jules_job()
+        await run_forecast_job()
+        await run_models_sync_job()
+        logger.info("Initial jobs completed.")
+    except Exception as e:
+        logger.error(f"Error running initial jobs: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    logger.info("Starting application...")
     init_firebase()
     start_scheduler()
+
+    # Trigger jobs in background
+    asyncio.create_task(run_initial_jobs())
 
     # Start Firestore listener
     watch = start_listener()
@@ -42,6 +61,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if watch:
         watch.unsubscribe()
+    logger.info("Application shutdown.")
 
 app = FastAPI(lifespan=lifespan)
 

@@ -2,6 +2,7 @@ import httpx
 from firebase_client import get_db
 from models.buxfer import Account, Transaction, Budget
 from firebase_admin import firestore
+from logger import logger
 
 BASE_URL = "https://www.buxfer.com/api"
 
@@ -66,15 +67,17 @@ async def fetch_buxfer_data(uid, username, password):
             return accounts, transactions, budgets
 
         except Exception as e:
-            print(f"Buxfer error for {uid}: {e}")
+            logger.error(f"Buxfer error for {uid}: {e}")
             return None, None, None
 
 async def update_buxfer(uid: str):
+    logger.debug(f"Updating buxfer for {uid}")
     db = get_db()
     settings_ref = db.document(f"users/{uid}/settings/current")
     settings_snap = settings_ref.get()
 
     if not settings_snap.exists:
+        logger.debug(f"No settings for user {uid}")
         return
 
     user_settings = settings_snap.to_dict()
@@ -82,6 +85,7 @@ async def update_buxfer(uid: str):
     password = user_settings.get("buxferPassword")
 
     if not username or not password:
+        logger.debug(f"No Buxfer credentials for user {uid}")
         return
 
     accounts, transactions, budgets = await fetch_buxfer_data(uid, username, password)
@@ -104,10 +108,12 @@ async def update_buxfer(uid: str):
             "updatedAt": firestore.SERVER_TIMESTAMP
         })
 
-    print(f"Buxfer updated for {uid}")
+    logger.info(f"Buxfer updated for {uid}")
 
 async def run_buxfer_job():
+    logger.info("Starting Buxfer job")
     db = get_db()
     users = db.collection("users").stream()
     for user in users:
         await update_buxfer(user.id)
+    logger.info("Buxfer job completed")

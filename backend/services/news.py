@@ -5,6 +5,7 @@ from models.news import Article, ArticleSource
 from config import get_settings
 from firebase_admin import firestore
 import asyncio
+from logger import logger
 
 settings = get_settings()
 
@@ -42,7 +43,7 @@ async def fetch_newsapi(api_key, topics):
                  ))
             return articles
     except Exception as e:
-        print(f"NewsAPI error: {e}")
+        logger.error(f"NewsAPI error: {e}")
         return []
 
 def fetch_rss(feed_url):
@@ -64,15 +65,17 @@ def fetch_rss(feed_url):
             ))
         return articles
     except Exception as e:
-        print(f"RSS error {feed_url}: {e}")
+        logger.error(f"RSS error {feed_url}: {e}")
         return []
 
 async def update_news(uid: str):
+    logger.debug(f"Updating news for {uid}")
     db = get_db()
     settings_ref = db.document(f"users/{uid}/settings/current")
     settings_snap = settings_ref.get()
 
     if not settings_snap.exists:
+        logger.debug(f"No settings for user {uid}")
         return
 
     user_settings = settings_snap.to_dict()
@@ -100,10 +103,14 @@ async def update_news(uid: str):
             "articles": articles_data,
             "updatedAt": firestore.SERVER_TIMESTAMP
         })
-        print(f"News updated for {uid}")
+        logger.info(f"News updated for {uid}")
+    else:
+        logger.debug(f"No news found for {uid}")
 
 async def run_news_job():
+    logger.info("Starting news job")
     db = get_db()
     users = db.collection("users").stream()
     for user in users:
         await update_news(user.id)
+    logger.info("News job completed")
