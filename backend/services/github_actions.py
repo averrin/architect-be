@@ -28,6 +28,16 @@ async def fetch_workflow_runs(client, owner, repo, token):
         logger.error(f"GitHub fetch error for {owner}/{repo}: {e}")
         return []
 
+async def fetch_run_jobs(client, jobs_url, token):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        resp = await client.get(jobs_url, headers=headers)
+        resp.raise_for_status()
+        return resp.json().get("jobs", [])
+    except Exception as e:
+        logger.error(f"GitHub jobs fetch error: {e}")
+        return []
+
 async def fetch_artifact_url(client, owner, repo, token, run_id):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -143,6 +153,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
             conclusion = run["conclusion"]
             owner = run.get("_owner")
             repo = run.get("_repo")
+            jobs_url = run.get("jobs_url")
 
             old_run = old_runs.get(run_id)
 
@@ -218,6 +229,39 @@ async def update_github_watcher(uid: str, user_settings: dict):
                 })
                 notifications_sent += 1
 
+            # Progress updates for active runs
+            progress = 0.0
+            current_step_name = ""
+            completed_steps_count = 0
+            total_steps_count = 0
+
+            if status == "in_progress" and jobs_url:
+                jobs = await fetch_run_jobs(client, jobs_url, token)
+                if jobs:
+                    for job in jobs:
+                        # Some APIs return steps, check structure
+                        steps = job.get("steps", [])
+                        total_steps_count += len(steps)
+                        for step in steps:
+                            if step.get("status") == "completed":
+                                completed_steps_count += 1
+                            elif step.get("status") == "in_progress":
+                                current_step_name = step.get("name")
+
+                    if total_steps_count > 0:
+                        progress = completed_steps_count / total_steps_count
+
+                    # Send silent data message for UI update
+                    if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                    send_fcm_message(fcm_token, {
+                        "type": "github_run_progress",
+                        "runId": run_id,
+                        "progress": str(progress),
+                        "currentStep": current_step_name,
+                        "completedSteps": str(completed_steps_count),
+                        "totalSteps": str(total_steps_count)
+                    }) # No notification body = silent
+
             start_time = 0
             try:
                 dt = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
@@ -235,7 +279,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
                 estimatedDuration=0,
                 startTime=start_time,
                 lastChecked=current_time_ms,
-                progress=0.0,
+                progress=progress,
                 artifactUrl=artifact_url,
                 htmlUrl=run["html_url"],
                 owner=owner,
