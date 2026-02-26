@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+firebase-admin
+apscheduler
+google-generativeai
+httpx
+feedparser
+xmltodict
+pydantic-settings
+python-dotenv
