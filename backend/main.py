@@ -16,6 +16,7 @@ from services.github_actions import run_github_job
 from services.jules import run_jules_job
 from services.forecast import run_forecast_job
 from services.models_sync import run_models_sync_job
+from services.heartbeat import run_fcm_heartbeat_job
 
 settings = get_settings()
 
@@ -26,7 +27,8 @@ JOBS = {
     "github": run_github_job,
     "jules": run_jules_job,
     "forecast": run_forecast_job,
-    "models_sync": run_models_sync_job
+    "models_sync": run_models_sync_job,
+    "fcm_heartbeat": run_fcm_heartbeat_job
 }
 
 async def run_initial_jobs():
@@ -39,6 +41,7 @@ async def run_initial_jobs():
         await run_jules_job()
         await run_forecast_job()
         await run_models_sync_job()
+        await run_fcm_heartbeat_job()
         logger.info("Initial jobs completed.")
     except Exception as e:
         logger.error(f"Error running initial jobs: {e}")
