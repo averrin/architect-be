@@ -62,7 +62,8 @@ async def update_jules_sessions(uid: str):
 async def run_jules_job():
     logger.info("Starting Jules job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for Jules")
     for user in users:
         await update_jules_sessions(user.id)
     logger.info("Jules job completed")

@@ -83,7 +83,8 @@ async def update_github_watcher(uid: str):
 async def run_github_job():
     logger.info("Starting GitHub job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for GitHub")
     for user in users:
         await update_github_watcher(user.id)
     logger.info("GitHub job completed")

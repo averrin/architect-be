@@ -110,7 +110,8 @@ async def update_news(uid: str):
 async def run_news_job():
     logger.info("Starting news job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for news")
     for user in users:
         await update_news(user.id)
     logger.info("News job completed")

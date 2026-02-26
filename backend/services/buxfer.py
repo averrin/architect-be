@@ -113,7 +113,8 @@ async def update_buxfer(uid: str):
 async def run_buxfer_job():
     logger.info("Starting Buxfer job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for Buxfer")
     for user in users:
         await update_buxfer(user.id)
     logger.info("Buxfer job completed")

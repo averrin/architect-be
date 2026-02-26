@@ -102,7 +102,8 @@ async def update_weather(uid: str):
 async def run_weather_job():
     logger.info("Starting weather job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for weather")
     for user in users:
         await update_weather(user.id)
     logger.info("Weather job completed")

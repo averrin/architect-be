@@ -43,7 +43,8 @@ async def sync_models(uid: str):
 async def run_models_sync_job():
     logger.info("Starting models sync job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for models sync")
     for user in users:
         await sync_models(user.id)
     logger.info("Models sync job completed")

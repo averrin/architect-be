@@ -44,7 +44,8 @@ async def generate_day_forecast(uid: str):
 async def run_forecast_job():
     logger.info("Starting forecast job")
     db = get_db()
-    users = db.collection("users").stream()
+    users = list(db.collection("users").stream())
+    logger.info(f"Found {len(users)} users to process for forecast")
     for user in users:
         await generate_day_forecast(user.id)
     logger.info("Forecast job completed")
