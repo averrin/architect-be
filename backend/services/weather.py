@@ -18,8 +18,8 @@ async def update_weather(uid: str, settings_data: dict):
         logger.debug(f"No settings provided for user {uid}")
         return
 
-    lat = settings_data.get("location", {}).get("lat")
-    lon = settings_data.get("location", {}).get("lon")
+    lat = settings_data.get("weatherLocation", {}).get("lat")
+    lon = settings_data.get("weatherLocation", {}).get("lon")
 
     if not lat or not lon:
         # Fallback to top level lat/lon if structure differs

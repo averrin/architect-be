@@ -80,7 +80,7 @@ async def update_buxfer(uid: str, user_settings: dict):
         logger.debug(f"No settings for user {uid}")
         return
 
-    username = user_settings.get("buxferUsername")
+    username = user_settings.get("buxferEmail")
     password = user_settings.get("buxferPassword")
 
     if not username or not password:

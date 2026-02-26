@@ -1,12 +1,12 @@
 def get_weather_info(code: int):
     mapping = {
-        0: ("clear-day", "Clear sky"),
-        1: ("partly-cloudy-day", "Mainly clear"),
-        2: ("partly-cloudy-day", "Partly cloudy"),
+        0: ("sunny", "Clear sky"),
+        1: ("partly-sunny", "Mainly clear"),
+        2: ("partly-sunny", "Partly cloudy"),
         3: ("cloudy", "Overcast"),
-        45: ("fog", "Fog"),
-        48: ("fog", "Depositing rime fog"),
-        51: ("rain", "Drizzle: Light"),
+        45: ("cloud", "Fog"),
+        48: ("cloud", "Depositing rime fog"),
+        51: ("water", "Drizzle: Light"),
         53: ("rain", "Drizzle: Moderate"),
         55: ("rain", "Drizzle: Dense"),
         56: ("sleet", "Freezing Drizzle: Light"),

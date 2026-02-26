@@ -14,6 +14,7 @@ async def generate_day_forecast(uid: str, settings_data: dict):
         logger.debug(f"No settings for user {uid}")
         return
 
+    model = settings_data.get("selectedModel")
     api_key = settings_data.get("apiKey")
     if not api_key:
         logger.debug(f"No API key for user {uid}")
@@ -26,7 +27,7 @@ async def generate_day_forecast(uid: str, settings_data: dict):
     prompt = f"{context}\nGenerate a personalized daily forecast and advice."
 
     try:
-        response = await generate_content(api_key, "gemini-pro", prompt)
+        response = await generate_content(api_key, model, prompt)
         text = response.text
 
         db.document(f"users/{uid}/forecast/today").set({
