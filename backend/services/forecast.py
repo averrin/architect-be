@@ -4,19 +4,16 @@ from firebase_admin import firestore
 from datetime import datetime
 import asyncio
 from logger import logger
+from utils.user_data import get_active_users
 
-async def generate_day_forecast(uid: str):
+async def generate_day_forecast(uid: str, settings_data: dict):
     logger.debug(f"Generating forecast for {uid}")
     db = get_db()
-    # Read settings
-    settings_ref = db.document(f"users/{uid}/settings/current")
-    settings_snap = settings_ref.get()
 
-    if not settings_snap.exists:
+    if not settings_data:
         logger.debug(f"No settings for user {uid}")
         return
 
-    settings_data = settings_snap.to_dict()
     api_key = settings_data.get("apiKey")
     if not api_key:
         logger.debug(f"No API key for user {uid}")
@@ -44,8 +41,16 @@ async def generate_day_forecast(uid: str):
 async def run_forecast_job():
     logger.info("Starting forecast job")
     db = get_db()
-    users = list(db.collection("users").stream())
-    logger.info(f"Found {len(users)} users to process for forecast")
-    for user in users:
-        await generate_day_forecast(user.id)
+
+    try:
+        users_with_settings = await asyncio.to_thread(get_active_users, db)
+    except Exception as e:
+        logger.error(f"Error getting active users: {e}")
+        return
+
+    logger.info(f"Found {len(users_with_settings)} users to process for forecast")
+
+    for uid, settings_data in users_with_settings:
+        await generate_day_forecast(uid, settings_data)
+
     logger.info("Forecast job completed")

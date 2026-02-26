@@ -3,6 +3,8 @@ from firebase_client import get_db
 from models.jules import JulesSession
 from firebase_admin import firestore
 from logger import logger
+from utils.user_data import get_active_users
+import asyncio
 
 JULES_API = "https://jules.googleapis.com/v1alpha"
 
@@ -20,17 +22,14 @@ async def fetch_jules_sessions(api_key):
         logger.error(f"Jules fetch error: {e}")
         return []
 
-async def update_jules_sessions(uid: str):
+async def update_jules_sessions(uid: str, user_settings: dict):
     logger.debug(f"Updating Jules sessions for {uid}")
     db = get_db()
-    settings_ref = db.document(f"users/{uid}/settings/current")
-    settings_snap = settings_ref.get()
 
-    if not settings_snap.exists:
+    if not user_settings:
         logger.debug(f"No settings for user {uid}")
         return
 
-    user_settings = settings_snap.to_dict()
     api_key = user_settings.get("julesGoogleApiKey")
 
     if not api_key:
@@ -62,8 +61,16 @@ async def update_jules_sessions(uid: str):
 async def run_jules_job():
     logger.info("Starting Jules job")
     db = get_db()
-    users = list(db.collection("users").stream())
-    logger.info(f"Found {len(users)} users to process for Jules")
-    for user in users:
-        await update_jules_sessions(user.id)
+
+    try:
+        users_with_settings = await asyncio.to_thread(get_active_users, db)
+    except Exception as e:
+        logger.error(f"Error getting active users: {e}")
+        return
+
+    logger.info(f"Found {len(users_with_settings)} users to process for Jules")
+
+    for uid, settings_data in users_with_settings:
+        await update_jules_sessions(uid, settings_data)
+
     logger.info("Jules job completed")

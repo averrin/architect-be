@@ -6,6 +6,7 @@ from config import get_settings
 from firebase_admin import firestore
 import asyncio
 from logger import logger
+from utils.user_data import get_active_users
 
 settings = get_settings()
 
@@ -68,17 +69,14 @@ def fetch_rss(feed_url):
         logger.error(f"RSS error {feed_url}: {e}")
         return []
 
-async def update_news(uid: str):
+async def update_news(uid: str, user_settings: dict):
     logger.debug(f"Updating news for {uid}")
     db = get_db()
-    settings_ref = db.document(f"users/{uid}/settings/current")
-    settings_snap = settings_ref.get()
 
-    if not settings_snap.exists:
+    if not user_settings:
         logger.debug(f"No settings for user {uid}")
         return
 
-    user_settings = settings_snap.to_dict()
     news_api_key = user_settings.get("newsApiKey") or settings.DEFAULT_NEWS_API_KEY
     topics = user_settings.get("newsTopics", [])
     rss_feeds = user_settings.get("rssFeeds", [])
@@ -110,8 +108,16 @@ async def update_news(uid: str):
 async def run_news_job():
     logger.info("Starting news job")
     db = get_db()
-    users = list(db.collection("users").stream())
-    logger.info(f"Found {len(users)} users to process for news")
-    for user in users:
-        await update_news(user.id)
+
+    try:
+        users_with_settings = await asyncio.to_thread(get_active_users, db)
+    except Exception as e:
+        logger.error(f"Error getting active users: {e}")
+        return
+
+    logger.info(f"Found {len(users_with_settings)} users to process for news")
+
+    for uid, settings_data in users_with_settings:
+        await update_news(uid, settings_data)
+
     logger.info("News job completed")

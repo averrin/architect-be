@@ -2,23 +2,22 @@ import httpx
 from firebase_client import get_db
 from models.weather import WeatherData, HourlyWeatherData
 from utils.weather_codes import get_weather_info
+from utils.user_data import get_active_users
 from firebase_admin import firestore
 from logger import logger
+import asyncio
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 
-async def update_weather(uid: str):
+async def update_weather(uid: str, settings_data: dict):
     logger.debug(f"Updating weather for {uid}")
     db = get_db()
-    # Read settings
-    settings_ref = db.document(f"users/{uid}/settings/current")
-    settings_snap = settings_ref.get()
 
-    if not settings_snap.exists:
-        logger.debug(f"No settings for user {uid}")
+    # Check if settings provided
+    if not settings_data:
+        logger.debug(f"No settings provided for user {uid}")
         return
 
-    settings_data = settings_snap.to_dict()
     lat = settings_data.get("location", {}).get("lat")
     lon = settings_data.get("location", {}).get("lon")
 
@@ -102,8 +101,18 @@ async def update_weather(uid: str):
 async def run_weather_job():
     logger.info("Starting weather job")
     db = get_db()
-    users = list(db.collection("users").stream())
-    logger.info(f"Found {len(users)} users to process for weather")
-    for user in users:
-        await update_weather(user.id)
+
+    # Use get_active_users to find users via settings collection group
+    # Run in thread to avoid blocking event loop during Firestore sync calls
+    try:
+        users_with_settings = await asyncio.to_thread(get_active_users, db)
+    except Exception as e:
+        logger.error(f"Error getting active users: {e}")
+        return
+
+    logger.info(f"Found {len(users_with_settings)} users to process for weather")
+
+    for uid, settings in users_with_settings:
+        await update_weather(uid, settings)
+
     logger.info("Weather job completed")

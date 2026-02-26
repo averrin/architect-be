@@ -5,6 +5,8 @@ from firebase_admin import firestore
 import time
 from datetime import datetime
 from logger import logger
+from utils.user_data import get_active_users
+import asyncio
 
 GITHUB_API = "https://api.github.com"
 
@@ -20,17 +22,14 @@ async def fetch_workflow_runs(owner, repo, token):
         logger.error(f"GitHub fetch error: {e}")
         return []
 
-async def update_github_watcher(uid: str):
+async def update_github_watcher(uid: str, user_settings: dict):
     logger.debug(f"Updating GitHub watcher for {uid}")
     db = get_db()
-    settings_ref = db.document(f"users/{uid}/settings/current")
-    settings_snap = settings_ref.get()
 
-    if not settings_snap.exists:
+    if not user_settings:
         logger.debug(f"No settings for user {uid}")
         return
 
-    user_settings = settings_snap.to_dict()
     owner = user_settings.get("julesOwner")
     repo = user_settings.get("julesRepo")
     token = user_settings.get("julesApiKey")
@@ -83,8 +82,16 @@ async def update_github_watcher(uid: str):
 async def run_github_job():
     logger.info("Starting GitHub job")
     db = get_db()
-    users = list(db.collection("users").stream())
-    logger.info(f"Found {len(users)} users to process for GitHub")
-    for user in users:
-        await update_github_watcher(user.id)
+
+    try:
+        users_with_settings = await asyncio.to_thread(get_active_users, db)
+    except Exception as e:
+        logger.error(f"Error getting active users: {e}")
+        return
+
+    logger.info(f"Found {len(users_with_settings)} users to process for GitHub")
+
+    for uid, settings_data in users_with_settings:
+        await update_github_watcher(uid, settings_data)
+
     logger.info("GitHub job completed")
