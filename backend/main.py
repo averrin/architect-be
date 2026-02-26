@@ -77,20 +77,6 @@ def status():
         "jobs": list(JOBS.keys())
     }
 
-@app.post("/trigger/{job_name}")
-async def trigger_job(job_name: str):
-    job_func = JOBS.get(job_name)
-    if not job_func:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # Run the job in the background or await it?
-    # Awaiting it allows us to return the result/status immediately for testing.
-    try:
-        await job_func()
-        return {"status": "success", "job": job_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)

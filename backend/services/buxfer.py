@@ -39,32 +39,49 @@ async def fetch_buxfer_data(uid, username, password):
             # Transactions (last 30 days)
             resp = await client.get(f"{BASE_URL}/transactions", params={"token": token, "days": 30})
             txs_data = resp.json().get("response", {}).get("transactions", [])
-            transactions = [Transaction(
-                id=str(t["id"]),
-                description=t["description"],
-                date=t["date"],
-                type=t["type"],
-                amount=float(t["amount"]),
-                currency=None,
-                accountId=str(t["accountId"]),
-                tags=t.get("tags"),
-                accountName=t.get("accountName"),
-                status=t.get("status")
-            ) for t in txs_data]
+            logger.info("========")
+            transactions = []
+            for t in txs_data:
+                try:
+                    # Transfers use fromAccount/toAccount instead of accountId
+                    account_id = t.get("accountId")
+                    account_name = t.get("accountName")
+                    if not account_id and "fromAccount" in t:
+                        account_id = t["fromAccount"]["id"]
+                        account_name = t["fromAccount"]["name"]
+                    transactions.append(Transaction(
+                        id=str(t["id"]),
+                        description=t["description"],
+                        date=t["date"],
+                        type=t["type"],
+                        amount=float(t["amount"]),
+                        currency=None,
+                        accountId=str(account_id) if account_id else "",
+                        tags=t.get("tags"),
+                        accountName=account_name,
+                        status=t.get("status")
+                    ))
+                except Exception as e:
+                    logger.error(f"Error parsing transaction for {uid}: {e} | raw: {t}")
 
             # Budgets
             resp = await client.get(f"{BASE_URL}/budgets", params={"token": token})
             budgets_data = resp.json().get("response", {}).get("budgets", [])
-            budgets = [Budget(
-                id=str(b["id"]),
-                name=b["name"],
-                limit=float(b["limit"]),
-                amount=float(b["amount"]),
-                spent=float(b.get("balance", 0)),
-                period=b.get("period", "monthly"),
-                currentPeriod=None,
-                balance=float(b.get("balance", 0))
-            ) for b in budgets_data]
+            budgets = []
+            for b in budgets_data:
+                try:
+                    budgets.append(Budget(
+                        id=str(b["id"]),
+                        name=b["name"],
+                        limit=float(b.get("limit", 0)),
+                        amount=float(b.get("amount", 0)),
+                        spent=float(b.get("spent", b.get("balance", 0))),
+                        period=b.get("period", "monthly"),
+                        currentPeriod=b.get("currentPeriod"),
+                        balance=float(b.get("balance", 0))
+                    ))
+                except Exception as e:
+                    logger.error(f"Error parsing budget for {uid}: {e} | raw: {b}")
 
             return accounts, transactions, budgets
 

@@ -1,6 +1,7 @@
 from services.buxfer import buxfer_login
 import httpx
 from firebase_client import get_db
+from utils.user_data import parse_settings
 
 async def handle_buxfer_command(uid, cmd_id, data):
     action = data.get("action")
@@ -11,8 +12,8 @@ async def handle_buxfer_command(uid, cmd_id, data):
     if not settings_snap.exists:
         raise Exception("Settings not found")
 
-    settings = settings_snap.to_dict()
-    username = settings.get("buxferUsername")
+    settings = parse_settings(settings_snap)
+    username = settings.get("buxferEmail")
     password = settings.get("buxferPassword")
 
     if not username or not password:
