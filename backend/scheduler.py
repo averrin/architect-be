@@ -5,6 +5,7 @@ from services.news import run_news_job
 from services.buxfer import run_buxfer_job
 from services.github_actions import run_github_job
 from services.jules import run_jules_job
+from services.dashboard import run_dashboard_discovery_job, run_dashboard_status_job
 from services.forecast import run_forecast_job
 from services.models_sync import run_models_sync_job
 from services.heartbeat import run_fcm_heartbeat_job
@@ -17,8 +18,12 @@ def start_scheduler():
     scheduler.add_job(run_weather_job, 'interval', minutes=settings.WEATHER_INTERVAL_MINUTES)
     scheduler.add_job(run_news_job, 'interval', minutes=settings.NEWS_INTERVAL_MINUTES)
     scheduler.add_job(run_buxfer_job, 'interval', minutes=settings.BUXFER_INTERVAL_MINUTES)
-    scheduler.add_job(run_github_job, 'interval', seconds=settings.GITHUB_WATCHER_INTERVAL_SECONDS)
-    scheduler.add_job(run_jules_job, 'interval', seconds=settings.JULES_INTERVAL_SECONDS)
+    # scheduler.add_job(run_github_job, 'interval', seconds=settings.GITHUB_WATCHER_INTERVAL_SECONDS)
+    # scheduler.add_job(run_jules_job, 'interval', seconds=settings.JULES_INTERVAL_SECONDS)
+
+    scheduler.add_job(run_dashboard_discovery_job, 'interval', minutes=settings.DASHBOARD_DISCOVERY_INTERVAL_MINUTES)
+    scheduler.add_job(run_dashboard_status_job, 'interval', seconds=settings.DASHBOARD_STATUS_INTERVAL_SECONDS)
+
     scheduler.add_job(run_fcm_heartbeat_job, 'interval', minutes=settings.FCM_HEARTBEAT_INTERVAL_MINUTES)
 
     # Daily forecast at specific hour
