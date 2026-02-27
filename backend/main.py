@@ -34,14 +34,14 @@ JOBS = {
 async def run_initial_jobs():
     logger.info("Triggering initial jobs...")
     try:
-        await run_weather_job()
-        await run_news_job()
-        await run_buxfer_job()
-        await run_github_job()
-        await run_jules_job()
-        await run_forecast_job()
-        await run_models_sync_job()
-        await run_fcm_heartbeat_job()
+        if settings.ENABLE_WEATHER_JOB: await run_weather_job()
+        if settings.ENABLE_NEWS_JOB: await run_news_job()
+        if settings.ENABLE_BUXFER_JOB: await run_buxfer_job()
+        if settings.ENABLE_GITHUB_JOB: await run_github_job()
+        if settings.ENABLE_JULES_JOB: await run_jules_job()
+        if settings.ENABLE_FORECAST_JOB: await run_forecast_job()
+        if settings.ENABLE_MODELS_SYNC_JOB: await run_models_sync_job()
+        if settings.ENABLE_FCM_HEARTBEAT_JOB: await run_fcm_heartbeat_job()
         logger.info("Initial jobs completed.")
     except Exception as e:
         logger.error(f"Error running initial jobs: {e}")
