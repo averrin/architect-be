@@ -9,6 +9,7 @@ from services.dashboard import run_dashboard_discovery_job, run_dashboard_status
 from services.forecast import run_forecast_job
 from services.models_sync import run_models_sync_job
 from services.heartbeat import run_fcm_heartbeat_job
+from services.reminders import run_reminders_job
 from logger import logger
 
 settings = get_settings()
@@ -45,6 +46,11 @@ def start_scheduler():
         scheduler.add_job(run_fcm_heartbeat_job, 'interval', minutes=settings.FCM_HEARTBEAT_INTERVAL_MINUTES)
     else:
         logger.info("FCM Heartbeat job disabled via config")
+
+    if settings.ENABLE_REMINDERS_JOB:
+        scheduler.add_job(run_reminders_job, 'interval', seconds=settings.REMINDERS_INTERVAL_SECONDS)
+    else:
+        logger.info("Reminders job disabled via config")
 
     scheduler.add_job(run_dashboard_discovery_job, 'interval', minutes=settings.DASHBOARD_DISCOVERY_INTERVAL_MINUTES)
     scheduler.add_job(run_dashboard_status_job, 'interval', seconds=settings.DASHBOARD_STATUS_INTERVAL_SECONDS)

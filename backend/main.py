@@ -18,6 +18,7 @@ from services.forecast import run_forecast_job
 from services.models_sync import run_models_sync_job
 from services.heartbeat import run_fcm_heartbeat_job
 from services.dashboard import run_dashboard_discovery_job, run_dashboard_status_job
+from services.reminders import run_reminders_job
 
 settings = get_settings()
 
@@ -31,7 +32,8 @@ JOBS = {
     "models_sync": run_models_sync_job,
     "fcm_heartbeat": run_fcm_heartbeat_job,
     "dashboard_discovery": run_dashboard_discovery_job,
-    "dashboard_status": run_dashboard_status_job
+    "dashboard_status": run_dashboard_status_job,
+    "reminders": run_reminders_job
 }
 
 async def run_initial_jobs():
@@ -45,6 +47,7 @@ async def run_initial_jobs():
         if settings.ENABLE_FORECAST_JOB: await run_forecast_job()
         if settings.ENABLE_MODELS_SYNC_JOB: await run_models_sync_job()
         if settings.ENABLE_FCM_HEARTBEAT_JOB: await run_fcm_heartbeat_job()
+        if settings.ENABLE_REMINDERS_JOB: await run_reminders_job()
         await run_dashboard_discovery_job()
         await run_dashboard_status_job()
         logger.info("Initial jobs completed.")

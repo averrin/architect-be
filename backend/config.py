@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     DASHBOARD_STATUS_INTERVAL_SECONDS: int = 10
 
     FCM_HEARTBEAT_INTERVAL_MINUTES: int = 1
+    REMINDERS_INTERVAL_SECONDS: int = 30
     FORECAST_HOUR: int = 7
     MODELS_SYNC_INTERVAL_HOURS: int = 24
     COMMAND_POLL_INTERVAL_SECONDS: int = 5
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
     ENABLE_FORECAST_JOB: bool = False
     ENABLE_MODELS_SYNC_JOB: bool = False
     ENABLE_FCM_HEARTBEAT_JOB: bool = True
+    ENABLE_REMINDERS_JOB: bool = True
 
     # Optional: Default API keys (fallback if user doesn't provide)
     DEFAULT_GEMINI_API_KEY: str | None = None
