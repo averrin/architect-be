@@ -153,17 +153,46 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                 target_owner = gh_meta.get("owner")
                 target_repo = gh_meta.get("repo")
                 target_branch = gh_meta.get("branch")
+                target_pr = gh_meta.get("pullRequestNumber")
 
-                candidates = []
-                for r in all_runs:
-                    if r.get("_owner") == target_owner and r.get("_repo") == target_repo:
+                session_start_time = 0
+                try:
+                    dt = datetime.fromisoformat(s.get("createTime", "").replace("Z", "+00:00"))
+                    session_start_time = int(dt.timestamp() * 1000)
+                except:
+                    pass
+
+                # Filter runs for this repo first
+                repo_runs = [r for r in all_runs if r.get("_owner") == target_owner and r.get("_repo") == target_repo]
+
+                # Priority 1: Match by PR number
+                if target_pr:
+                    for r in repo_runs:
+                        prs = r.get("pull_requests", [])
+                        if any(pr.get("number") == target_pr for pr in prs):
+                            matched_run = _create_watched_run_data(r)
+                            break
+
+                # Priority 2: Match by Branch + Time Constraint (fallback)
+                if not matched_run and target_branch:
+                    candidates = []
+                    for r in repo_runs:
                         if r.get("head_branch") == target_branch:
-                            candidates.append(r)
+                            run_created_at = 0
+                            try:
+                                dt = datetime.fromisoformat(r.get("created_at", "").replace("Z", "+00:00"))
+                                run_created_at = int(dt.timestamp() * 1000)
+                            except:
+                                pass
 
-                if candidates:
-                    candidates.sort(key=lambda x: x.get("run_number", 0), reverse=True)
-                    best_match = candidates[0]
-                    matched_run = _create_watched_run_data(best_match)
+                            # Allow runs created up to 60s before session start
+                            if run_created_at >= session_start_time - 60000:
+                                candidates.append(r)
+
+                    if candidates:
+                        # Sort by created_at desc to find latest
+                        candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                        matched_run = _create_watched_run_data(candidates[0])
 
             joint_sessions.append(JointSessionModel(session=session_model, run=matched_run))
 
