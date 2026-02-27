@@ -103,6 +103,10 @@ async def _process_reminders(uid: str, db, fcm_token: str, user_tz: str):
             if not reminder_time_str:
                 continue
 
+            last_sent = data.get('lastSent')
+            if last_sent == reminder_time_str:
+                continue
+
             try:
                 reminder_dt = datetime.fromisoformat(reminder_time_str)
                 # Treat as local time in user's timezone if naive
@@ -133,18 +137,18 @@ async def _process_reminders(uid: str, db, fcm_token: str, user_tz: str):
             })
             logger.info(f"Sent reminder FCM to {uid}: {title}")
 
-            # Advance recurrence or delete
+            # Advance recurrence or mark as delivered
             if recurrence:
                 next_time = _calculate_next_recurrence(reminder_time_str, recurrence, user_tz)
                 if next_time:
-                    doc.reference.update({"reminderTime": next_time})
+                    doc.reference.update({"reminderTime": next_time, "lastSent": reminder_time_str})
                     logger.debug(f"Advanced recurring reminder {doc.id} to {next_time}")
                 else:
-                    doc.reference.delete()
-                    logger.debug(f"Deleted reminder {doc.id} (invalid recurrence)")
+                    doc.reference.update({"lastSent": reminder_time_str})
+                    logger.debug(f"Marked reminder {doc.id} as sent (invalid recurrence)")
             else:
-                doc.reference.delete()
-                logger.debug(f"Deleted one-off reminder {doc.id}")
+                doc.reference.update({"lastSent": reminder_time_str})
+                logger.debug(f"Marked one-off reminder {doc.id} as sent")
 
     except Exception as e:
         logger.error(f"Error processing reminders for {uid}: {e}")
