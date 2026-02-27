@@ -76,298 +76,264 @@ async def fetch_artifact_url(client, owner, repo, token, run_id):
 
 async def update_dashboard_discovery(uid: str, user_settings: dict):
     # Discovery Phase: Full Refresh
-    db = get_db()
-
-    if not user_settings:
-        logger.debug(f"No settings for user {uid}")
-        return
-
-    jules_api_key = user_settings.get("julesGoogleApiKey")
-    github_token = user_settings.get("julesApiKey")
-
-    if not jules_api_key or not github_token:
-        logger.debug(f"Missing API keys for user {uid}")
-        return
-
-    # 1. Fetch Jules Sessions
-    raw_sessions = await fetch_jules_sessions(jules_api_key)
-
-    # Sort by createTime desc
-    # createTime is ISO string (e.g. "2023-10-27T10:00:00Z")
     try:
-        raw_sessions.sort(key=lambda x: x.get("createTime", ""), reverse=True)
-    except Exception:
-        pass # If parsing fails, use default order
+        db = get_db()
 
-    # Keep top 10
-    top_sessions = raw_sessions[:10]
+        if not user_settings:
+            logger.debug(f"No settings for user {uid}")
+            return
 
-    # 2. Identify Unique Repos from Top Sessions
-    unique_repos = set()
-    for s in top_sessions:
-        meta = s.get("githubMetadata", {})
-        if meta and meta.get("owner") and meta.get("repo"):
-            unique_repos.add((meta["owner"], meta["repo"]))
+        jules_api_key = user_settings.get("julesGoogleApiKey")
+        github_token = user_settings.get("julesApiKey")
 
-    # Also include manual repo from settings if present
-    manual_owner = user_settings.get("julesOwner")
-    manual_repo = user_settings.get("julesRepo")
-    if manual_owner and manual_repo:
-        unique_repos.add((manual_owner, manual_repo))
+        if not jules_api_key or not github_token:
+            logger.debug(f"Missing API keys for user {uid}")
+            return
 
-    # 3. Fetch GitHub Runs for these Repos
-    all_runs = []
-    async with httpx.AsyncClient() as client:
-        # Fetch generic runs (for matching sessions) and master runs (for separate list)
-        # To optimize, we can fetch all recent runs and filter in memory.
-        tasks = []
-        for owner, repo in unique_repos:
-            tasks.append(fetch_workflow_runs(client, owner, repo, github_token))
+        # 1. Fetch Jules Sessions
+        raw_sessions = await fetch_jules_sessions(jules_api_key)
+        logger.debug(f"Fetched {len(raw_sessions)} Jules sessions for {uid}")
 
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            all_runs.extend(res)
+        try:
+            raw_sessions.sort(key=lambda x: x.get("createTime", ""), reverse=True)
+        except Exception:
+            pass
 
-    # 4. Construct Joint Models
-    joint_sessions = []
+        top_sessions = raw_sessions[:10]
 
-    for s in top_sessions:
-        session_id = s.get("name", "").split("/")[-1]
-        session_model = JulesSession(
-            name=s.get("name", ""),
-            id=session_id,
-            title=s.get("title", ""),
-            state=s.get("state", ""),
-            url=s.get("url", ""),
-            createTime=s.get("createTime", ""),
-            updateTime=s.get("updateTime", ""),
-            githubMetadata=s.get("githubMetadata")
+        # 2. Identify Unique Repos from Top Sessions
+        unique_repos = set()
+        for s in top_sessions:
+            meta = s.get("githubMetadata", {})
+            if meta and meta.get("owner") and meta.get("repo"):
+                unique_repos.add((meta["owner"], meta["repo"]))
+
+        # Also include manual repo from settings if present
+        manual_owner = user_settings.get("julesOwner")
+        manual_repo = user_settings.get("julesRepo")
+        if manual_owner and manual_repo:
+            unique_repos.add((manual_owner, manual_repo))
+
+        # 3. Fetch GitHub Runs for these Repos
+        all_runs = []
+        async with httpx.AsyncClient() as client:
+            tasks = []
+            for owner, repo in unique_repos:
+                tasks.append(fetch_workflow_runs(client, owner, repo, github_token))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception):
+                    logger.error(f"Error fetching runs for one repo: {res}")
+                elif res:
+                    all_runs.extend(res)
+
+        logger.debug(f"Fetched {len(all_runs)} GitHub runs for {uid}")
+
+        # 4. Construct Joint Models
+        joint_sessions = []
+
+        for s in top_sessions:
+            session_id = s.get("name", "").split("/")[-1]
+            session_model = JulesSession(
+                name=s.get("name", ""),
+                id=session_id,
+                title=s.get("title", ""),
+                state=s.get("state", ""),
+                url=s.get("url", ""),
+                createTime=s.get("createTime", ""),
+                updateTime=s.get("updateTime", ""),
+                githubMetadata=s.get("githubMetadata")
+            )
+
+            matched_run = None
+            gh_meta = s.get("githubMetadata")
+
+            if gh_meta:
+                target_owner = gh_meta.get("owner")
+                target_repo = gh_meta.get("repo")
+                target_branch = gh_meta.get("branch")
+
+                candidates = []
+                for r in all_runs:
+                    if r.get("_owner") == target_owner and r.get("_repo") == target_repo:
+                        if r.get("head_branch") == target_branch:
+                            candidates.append(r)
+
+                if candidates:
+                    candidates.sort(key=lambda x: x.get("run_number", 0), reverse=True)
+                    best_match = candidates[0]
+                    matched_run = _create_watched_run_data(best_match)
+
+            joint_sessions.append(JointSessionModel(session=session_model, run=matched_run))
+
+        # 5. Construct Master Runs List
+        master_runs_data = []
+
+        master_candidates = [r for r in all_runs if r.get("head_branch") in ["master", "main"]]
+        master_candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+        top_master_runs = master_candidates[:5]
+
+        for r in top_master_runs:
+            master_runs_data.append(_create_watched_run_data(r))
+
+        # 6. Save Dashboard Data
+        dashboard_data = DashboardData(
+            jointSessions=joint_sessions,
+            masterRuns=master_runs_data,
+            updatedAt=int(time.time() * 1000)
         )
 
-        matched_run = None
-        gh_meta = s.get("githubMetadata")
+        dashboard_ref = db.document(f"users/{uid}/dashboard/data")
+        dashboard_ref.set(dashboard_data.model_dump())
+        logger.info(f"Dashboard discovery updated for {uid}")
 
-        if gh_meta:
-            target_owner = gh_meta.get("owner")
-            target_repo = gh_meta.get("repo")
-            target_branch = gh_meta.get("branch")
-            # target_pr = gh_meta.get("pullRequestNumber") # Not always reliable to match run by PR
-
-            # Attempt to find matching run
-            # Prioritize matching by branch and repo
-            # If multiple runs exist for the branch, take the latest one created AFTER or AROUND session creation?
-            # Or just the latest one. Let's take the latest one for now.
-
-            candidates = []
-            for r in all_runs:
-                if r.get("_owner") == target_owner and r.get("_repo") == target_repo:
-                     if r.get("head_branch") == target_branch:
-                         candidates.append(r)
-
-            if candidates:
-                # Sort by run number or created_at desc
-                candidates.sort(key=lambda x: x.get("run_number", 0), reverse=True)
-                best_match = candidates[0]
-
-                # Create WatchedRunData
-                matched_run = _create_watched_run_data(best_match)
-
-        joint_sessions.append(JointSessionModel(session=session_model, run=matched_run))
-
-    # 5. Construct Master Runs List
-    master_runs_data = []
-
-    # Filter for master/main branches
-    master_candidates = [r for r in all_runs if r.get("head_branch") in ["master", "main"]]
-
-    # Sort by created_at desc
-    master_candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-
-    # Keep top 5
-    top_master_runs = master_candidates[:5]
-
-    for r in top_master_runs:
-        master_runs_data.append(_create_watched_run_data(r))
-
-    # 6. Save Dashboard Data
-    dashboard_data = DashboardData(
-        jointSessions=joint_sessions,
-        masterRuns=master_runs_data,
-        updatedAt=int(time.time() * 1000)
-    )
-
-    dashboard_ref = db.document(f"users/{uid}/dashboard/data")
-
-    # Check for notifications before saving (similar to existing logic)
-    # Ideally, we should compare with previous state.
-    # For simplicity in this first pass, we might skip complex notification diffing here
-    # and rely on the Status Update job to handle state changes if they happen *after* discovery.
-    # However, if a new session appears, we should notify.
-
-    old_data_snap = dashboard_ref.get()
-    if old_data_snap.exists:
-        old_data = old_data_snap.to_dict()
-        # logic to detect new sessions...
-        # For now, let's keep it simple and just save. The status job can handle updates.
-        pass
-
-    dashboard_ref.set(dashboard_data.model_dump())
-    logger.info(f"Dashboard discovery updated for {uid}")
+    except Exception as e:
+        logger.error(f"Error in update_dashboard_discovery for {uid}: {e}")
 
 
 async def update_dashboard_status(uid: str, user_settings: dict):
     # Status Update Phase: Check Active Items
-    db = get_db()
+    try:
+        db = get_db()
 
-    dashboard_ref = db.document(f"users/{uid}/dashboard/data")
-    doc = dashboard_ref.get()
+        dashboard_ref = db.document(f"users/{uid}/dashboard/data")
+        doc = dashboard_ref.get()
 
-    if not doc.exists:
-        return
+        if not doc.exists:
+            return
 
-    data = doc.to_dict()
-    # Need to parse back to Pydantic to easily work with it, or just use dict
-    # Let's use dict for speed/simplicity in update logic
+        data = doc.to_dict()
 
-    joint_sessions = data.get("jointSessions", [])
-    master_runs = data.get("masterRuns", [])
+        joint_sessions = data.get("jointSessions", [])
+        master_runs = data.get("masterRuns", [])
 
-    active_sessions_indices = []
-    active_runs_indices = [] # tuples of (list_name, index, run_id, owner, repo)
+        active_sessions_indices = []
+        active_runs_indices = []
 
-    # Identify Active Sessions
-    for idx, item in enumerate(joint_sessions):
-        s = item.get("session", {})
-        if s.get("state") in ["CREATING", "ACTIVE", "INITIALIZING"]:
-            active_sessions_indices.append(idx)
+        # Identify Active Sessions
+        for idx, item in enumerate(joint_sessions):
+            s = item.get("session", {})
+            if s.get("state") in ["CREATING", "ACTIVE", "INITIALIZING"]:
+                active_sessions_indices.append(idx)
 
-        r = item.get("run")
-        if r and r.get("status") in ["queued", "in_progress"]:
-            active_runs_indices.append(("jointSessions", idx, r.get("runId"), r.get("owner"), r.get("repo")))
+            r = item.get("run")
+            if r and r.get("status") in ["queued", "in_progress"]:
+                active_runs_indices.append(("jointSessions", idx, r.get("runId"), r.get("owner"), r.get("repo")))
 
-    # Identify Active Master Runs
-    for idx, r in enumerate(master_runs):
-        if r.get("status") in ["queued", "in_progress"]:
-            active_runs_indices.append(("masterRuns", idx, r.get("runId"), r.get("owner"), r.get("repo")))
+        # Identify Active Master Runs
+        for idx, r in enumerate(master_runs):
+            if r.get("status") in ["queued", "in_progress"]:
+                active_runs_indices.append(("masterRuns", idx, r.get("runId"), r.get("owner"), r.get("repo")))
 
-    if not active_sessions_indices and not active_runs_indices:
-        # Nothing active, skip poll
-        return
+        if not active_sessions_indices and not active_runs_indices:
+            return
 
-    jules_api_key = user_settings.get("julesGoogleApiKey")
-    github_token = user_settings.get("julesApiKey")
+        jules_api_key = user_settings.get("julesGoogleApiKey")
+        github_token = user_settings.get("julesApiKey")
 
-    updated = False
-    fcm_token = None
+        updated = False
+        fcm_token = None
 
-    # Refetch Active Sessions
-    if active_sessions_indices:
-        # Jules API doesn't support batch get by ID, so we fetch all again (or filtered list)
-        # Re-using fetch_jules_sessions is easiest given the API constraints
-        fresh_sessions_list = await fetch_jules_sessions(jules_api_key)
-        fresh_map = {s.get("name", "").split("/")[-1]: s for s in fresh_sessions_list}
+        # Refetch Active Sessions
+        if active_sessions_indices:
+            fresh_sessions_list = await fetch_jules_sessions(jules_api_key)
+            fresh_map = {s.get("name", "").split("/")[-1]: s for s in fresh_sessions_list}
 
-        for idx in active_sessions_indices:
-            item = joint_sessions[idx]
-            s_old = item["session"]
-            sid = s_old["id"]
+            for idx in active_sessions_indices:
+                item = joint_sessions[idx]
+                s_old = item["session"]
+                sid = s_old["id"]
 
-            if sid in fresh_map:
-                s_new_raw = fresh_map[sid]
-                # Check for change
-                if s_new_raw.get("state") != s_old["state"]:
-                    updated = True
-                    new_state = s_new_raw.get("state")
-                    logger.info(f"Session {sid} changed state to {new_state}")
+                if sid in fresh_map:
+                    s_new_raw = fresh_map[sid]
+                    if s_new_raw.get("state") != s_old["state"]:
+                        updated = True
+                        new_state = s_new_raw.get("state")
+                        logger.info(f"Session {sid} changed state to {new_state}")
 
-                    # Update object
-                    item["session"]["state"] = new_state
-                    item["session"]["updateTime"] = s_new_raw.get("updateTime", "")
+                        item["session"]["state"] = new_state
+                        item["session"]["updateTime"] = s_new_raw.get("updateTime", "")
 
-                    # Notify
-                    if new_state == "ACTIVE":
-                         if not fcm_token: fcm_token = get_fcm_token(uid, db)
-                         send_fcm_message(fcm_token, {
-                            "type": "jules_session",
-                            "status": "active",
-                            "sessionId": sid,
-                            "title": s_old.get("title", "")
-                        }, notification={
-                            "title": "Jules Session Active",
-                            "body": f"Session '{s_old.get('title', 'Untitled')}' is now active."
-                        })
+                        if new_state == "ACTIVE":
+                             if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                             send_fcm_message(fcm_token, {
+                                "type": "jules_session",
+                                "status": "active",
+                                "sessionId": sid,
+                                "title": s_old.get("title", "")
+                            }, notification={
+                                "title": "Jules Session Active",
+                                "body": f"Session '{s_old.get('title', 'Untitled')}' is now active."
+                            })
 
-    # Refetch Active Runs
-    if active_runs_indices:
-        async with httpx.AsyncClient() as client:
-            # We have run IDs, but GitHub API requires owner/repo to fetch specific run
-            # GET /repos/{owner}/{repo}/actions/runs/{run_id}
+        # Refetch Active Runs
+        if active_runs_indices:
+            async with httpx.AsyncClient() as client:
+                for list_name, idx, run_id, owner, repo in active_runs_indices:
+                    url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}"
+                    headers = {"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github.v3+json"}
 
-            for list_name, idx, run_id, owner, repo in active_runs_indices:
-                url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}"
-                headers = {"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github.v3+json"}
+                    try:
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code == 200:
+                            r_new = resp.json()
+                            r_new["_owner"] = owner
+                            r_new["_repo"] = repo
 
-                try:
-                    resp = await client.get(url, headers=headers)
-                    if resp.status_code == 200:
-                        r_new = resp.json()
-                        r_new["_owner"] = owner
-                        r_new["_repo"] = repo
-
-                        # Get old object to compare
-                        if list_name == "jointSessions":
-                            old_run = joint_sessions[idx]["run"]
-                        else:
-                            old_run = master_runs[idx]
-
-                        new_status = r_new.get("status")
-                        new_conclusion = r_new.get("conclusion")
-
-                        if new_status != old_run["status"] or new_conclusion != old_run["conclusion"]:
-                            updated = True
-
-                            # Fetch artifact if completed success
-                            artifact_url = old_run.get("artifactUrl")
-                            if new_status == "completed" and new_conclusion == "success" and not artifact_url:
-                                artifact_url = await fetch_artifact_url(client, owner, repo, github_token, run_id)
-
-                            # Create updated object
-                            updated_run_data = _create_watched_run_data(r_new, artifact_url)
-
-                            # Update list
                             if list_name == "jointSessions":
-                                joint_sessions[idx]["run"] = updated_run_data.model_dump()
+                                old_run = joint_sessions[idx]["run"]
                             else:
-                                master_runs[idx] = updated_run_data.model_dump()
+                                old_run = master_runs[idx]
 
-                            # Notify
-                            if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                            new_status = r_new.get("status")
+                            new_conclusion = r_new.get("conclusion")
 
-                            if old_run["status"] != "completed" and new_status == "completed":
-                                msg_data = {
-                                    "type": "github_run",
-                                    "status": "completed",
-                                    "conclusion": new_conclusion,
-                                    "runId": str(run_id),
-                                    "repo": repo,
-                                    "name": r_new.get("name"),
-                                    "headBranch": r_new.get("head_branch"),
-                                }
-                                if artifact_url:
-                                    msg_data["artifactUrl"] = artifact_url
+                            if new_status != old_run["status"] or new_conclusion != old_run["conclusion"]:
+                                updated = True
 
-                                send_fcm_message(fcm_token, msg_data, notification={
-                                    "title": f"Run {new_conclusion.title()}: {r_new.get('name')}",
-                                    "body": f"GitHub Action completed on {repo}"
-                                })
+                                artifact_url = old_run.get("artifactUrl")
+                                if new_status == "completed" and new_conclusion == "success" and not artifact_url:
+                                    artifact_url = await fetch_artifact_url(client, owner, repo, github_token, run_id)
 
-                except Exception as e:
-                    logger.error(f"Error updating run {run_id}: {e}")
+                                updated_run_data = _create_watched_run_data(r_new, artifact_url)
 
-    if updated:
-        data["updatedAt"] = int(time.time() * 1000)
-        dashboard_ref.set(data)
-        logger.info(f"Dashboard status updated for {uid}")
+                                if list_name == "jointSessions":
+                                    joint_sessions[idx]["run"] = updated_run_data.model_dump()
+                                else:
+                                    master_runs[idx] = updated_run_data.model_dump()
+
+                                if not fcm_token: fcm_token = get_fcm_token(uid, db)
+
+                                if old_run["status"] != "completed" and new_status == "completed":
+                                    msg_data = {
+                                        "type": "github_run",
+                                        "status": "completed",
+                                        "conclusion": new_conclusion,
+                                        "runId": str(run_id),
+                                        "repo": repo,
+                                        "name": r_new.get("name"),
+                                        "headBranch": r_new.get("head_branch"),
+                                    }
+                                    if artifact_url:
+                                        msg_data["artifactUrl"] = artifact_url
+
+                                    send_fcm_message(fcm_token, msg_data, notification={
+                                        "title": f"Run {new_conclusion.title()}: {r_new.get('name')}",
+                                        "body": f"GitHub Action completed on {repo}"
+                                    })
+
+                    except Exception as e:
+                        logger.error(f"Error updating run {run_id}: {e}")
+
+        if updated:
+            data["updatedAt"] = int(time.time() * 1000)
+            dashboard_ref.set(data)
+            logger.info(f"Dashboard status updated for {uid}")
+
+    except Exception as e:
+        logger.error(f"Error in update_dashboard_status for {uid}: {e}")
 
 
 def _create_watched_run_data(run_dict, artifact_url=None):

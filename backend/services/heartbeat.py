@@ -6,7 +6,7 @@ from utils.user_data import get_active_users
 from logger import logger
 
 async def run_fcm_heartbeat_job():
-    logger.info("Running FCM Heartbeat job...")
+    logger.debug("Running FCM Heartbeat job...")
     try:
         db = get_db()
         users = await asyncio.to_thread(get_active_users, db)
