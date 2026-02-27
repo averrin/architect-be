@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     MODELS_SYNC_INTERVAL_HOURS: int = 24
     COMMAND_POLL_INTERVAL_SECONDS: int = 5
 
+    # Job Control Flags
+    ENABLE_WEATHER_JOB: bool = True
+    ENABLE_NEWS_JOB: bool = True
+    ENABLE_BUXFER_JOB: bool = True
+    ENABLE_GITHUB_JOB: bool = True
+    ENABLE_JULES_JOB: bool = False
+    ENABLE_FORECAST_JOB: bool = False
+    ENABLE_MODELS_SYNC_JOB: bool = False
+    ENABLE_FCM_HEARTBEAT_JOB: bool = True
+
     # Optional: Default API keys (fallback if user doesn't provide)
     DEFAULT_GEMINI_API_KEY: str | None = None
     DEFAULT_NEWS_API_KEY: str | None = None
