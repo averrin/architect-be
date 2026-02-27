@@ -26,10 +26,10 @@ class Settings(BaseSettings):
     COMMAND_POLL_INTERVAL_SECONDS: int = 5
 
     # Job Control Flags
-    ENABLE_WEATHER_JOB: bool = True
-    ENABLE_NEWS_JOB: bool = True
-    ENABLE_BUXFER_JOB: bool = True
-    ENABLE_GITHUB_JOB: bool = True
+    ENABLE_WEATHER_JOB: bool = False
+    ENABLE_NEWS_JOB: bool = False
+    ENABLE_BUXFER_JOB: bool = False
+    ENABLE_GITHUB_JOB: bool = False
     ENABLE_JULES_JOB: bool = False
     ENABLE_FORECAST_JOB: bool = False
     ENABLE_MODELS_SYNC_JOB: bool = False

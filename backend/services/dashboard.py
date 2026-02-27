@@ -52,6 +52,20 @@ async def fetch_workflow_runs(client, owner, repo, token, branch=None):
         logger.error(f"GitHub fetch error for {owner}/{repo}: {e}")
         return []
 
+async def fetch_pr_state(client, owner, repo, token, pr_number):
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        pr = resp.json()
+        merged = pr.get("merged", False)
+        state = "merged" if merged else pr.get("state", "open")
+        return {"merged": merged, "state": state}
+    except Exception as e:
+        logger.error(f"GitHub PR fetch error for {owner}/{repo}#{pr_number}: {e}")
+        return None
+
 async def fetch_artifact_url(client, owner, repo, token, run_id):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -71,6 +85,47 @@ async def fetch_artifact_url(client, owner, repo, token, run_id):
     except Exception as e:
         logger.error(f"GitHub artifact fetch error for run {run_id}: {e}")
         return None
+
+# --- Helpers ---
+
+def _parse_session_metadata(session: dict) -> dict | None:
+    source_ctx = session.get("sourceContext") or {}
+    source = source_ctx.get("source", "")
+    owner, repo = None, None
+    try:
+        # format: sources/github/owner/repo
+        parts = source.split("/")
+        if len(parts) >= 4 and parts[1] == "github":
+            owner = parts[2]
+            repo = parts[3]
+    except (ValueError, IndexError):
+        pass
+    if not owner or not repo:
+        return None
+
+    branch = source_ctx.get("githubRepoContext", {}).get("startingBranch")
+    pr_number = None
+
+    # Look for a PR in outputs
+    for output in (session.get("outputs") or []):
+        pr = output.get("pullRequest")
+        if pr:
+            pr_url = pr.get("url", "")
+            try:
+                parts = pr_url.rstrip("/").split("/")
+                if len(parts) >= 2 and parts[-2] == "pull":
+                    pr_number = int(parts[-1])
+            except (ValueError, IndexError):
+                pass
+            branch = pr.get("headRef") or branch
+            break
+
+    return {
+        "owner": owner,
+        "repo": repo,
+        "branch": branch,
+        "pullRequestNumber": pr_number,
+    }
 
 # --- Main Logic ---
 
@@ -104,9 +159,9 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
         # 2. Identify Unique Repos from Top Sessions
         unique_repos = set()
         for s in top_sessions:
-            meta = s.get("githubMetadata", {})
-            if meta and meta.get("owner") and meta.get("repo"):
-                unique_repos.add((meta["owner"], meta["repo"]))
+            pr_meta = _parse_session_metadata(s)
+            if pr_meta and pr_meta.get("owner") and pr_meta.get("repo"):
+                unique_repos.add((pr_meta["owner"], pr_meta["repo"]))
 
         # Also include manual repo from settings if present
         manual_owner = user_settings.get("julesOwner")
@@ -130,11 +185,32 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
 
         logger.debug(f"Fetched {len(all_runs)} GitHub runs for {uid}")
 
-        # 4. Construct Joint Models
+        # 4. Fetch PR states for sessions that have a PR number
+        pr_states = {}  # key: "owner/repo/pr_number" -> {"merged": bool, "state": str}
+        async with httpx.AsyncClient() as client:
+            pr_tasks = []
+            pr_keys = []
+            for s in top_sessions:
+                meta = _parse_session_metadata(s)
+                if meta and meta.get("pullRequestNumber") and meta.get("owner") and meta.get("repo"):
+                    key = f"{meta['owner']}/{meta['repo']}/{meta['pullRequestNumber']}"
+                    if key not in pr_states:
+                        pr_keys.append(key)
+                        pr_tasks.append(fetch_pr_state(client, meta["owner"], meta["repo"], github_token, meta["pullRequestNumber"]))
+            if pr_tasks:
+                pr_results = await asyncio.gather(*pr_tasks, return_exceptions=True)
+                for key, result in zip(pr_keys, pr_results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Error fetching PR state for {key}: {result}")
+                    elif result:
+                        pr_states[key] = result
+
+        # 5. Construct Joint Models
         joint_sessions = []
 
         for s in top_sessions:
             session_id = s.get("name", "").split("/")[-1]
+            pr_meta = _parse_session_metadata(s)
             session_model = JulesSession(
                 name=s.get("name", ""),
                 id=session_id,
@@ -143,11 +219,11 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                 url=s.get("url", ""),
                 createTime=s.get("createTime", ""),
                 updateTime=s.get("updateTime", ""),
-                githubMetadata=s.get("githubMetadata")
+                githubMetadata=pr_meta
             )
 
             matched_run = None
-            gh_meta = s.get("githubMetadata")
+            gh_meta = pr_meta
 
             if gh_meta:
                 target_owner = gh_meta.get("owner")
@@ -165,34 +241,35 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                 # Filter runs for this repo first
                 repo_runs = [r for r in all_runs if r.get("_owner") == target_owner and r.get("_repo") == target_repo]
 
+                logger.debug(f"Matching session {session_id}: owner={target_owner} repo={target_repo} branch={target_branch} pr={target_pr} repo_runs={len(repo_runs)}")
+
+                # Lookup PR state
+                pr_state_data = None
+                if target_pr and target_owner and target_repo:
+                    pr_state_data = pr_states.get(f"{target_owner}/{target_repo}/{target_pr}")
+
                 # Priority 1: Match by PR number
                 if target_pr:
                     for r in repo_runs:
                         prs = r.get("pull_requests", [])
                         if any(pr.get("number") == target_pr for pr in prs):
-                            matched_run = _create_watched_run_data(r)
+                            matched_run = _create_watched_run_data(r, pr_state=pr_state_data)
+                            logger.debug(f"Matched by PR#{target_pr}: run {r.get('id')}")
                             break
+                    if not matched_run:
+                        logger.debug(f"No run matched PR#{target_pr} among {len(repo_runs)} repo runs")
 
-                # Priority 2: Match by Branch + Time Constraint (fallback)
+                # Priority 2: Match by Branch (no time constraint)
                 if not matched_run and target_branch:
-                    candidates = []
-                    for r in repo_runs:
-                        if r.get("head_branch") == target_branch:
-                            run_created_at = 0
-                            try:
-                                dt = datetime.fromisoformat(r.get("created_at", "").replace("Z", "+00:00"))
-                                run_created_at = int(dt.timestamp() * 1000)
-                            except:
-                                pass
-
-                            # Allow runs created up to 60s before session start
-                            if run_created_at >= session_start_time - 60000:
-                                candidates.append(r)
-
+                    candidates = [r for r in repo_runs if r.get("head_branch") == target_branch]
                     if candidates:
-                        # Sort by created_at desc to find latest
                         candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-                        matched_run = _create_watched_run_data(candidates[0])
+                        matched_run = _create_watched_run_data(candidates[0], pr_state=pr_state_data)
+                        logger.debug(f"Matched by branch '{target_branch}': run {candidates[0].get('id')}")
+                    else:
+                        logger.debug(f"No runs found for branch '{target_branch}' in {len(repo_runs)} repo runs")
+            else:
+                logger.debug(f"Session {session_id} has no sourceContext/repo metadata, skipping run match")
 
             joint_sessions.append(JointSessionModel(session=session_model, run=matched_run))
 
@@ -365,7 +442,7 @@ async def update_dashboard_status(uid: str, user_settings: dict):
         logger.error(f"Error in update_dashboard_status for {uid}: {e}")
 
 
-def _create_watched_run_data(run_dict, artifact_url=None):
+def _create_watched_run_data(run_dict, artifact_url=None, pr_state=None):
     # Helper to convert GitHub API dict to WatchedRunData
     start_time = 0
     try:
@@ -376,6 +453,9 @@ def _create_watched_run_data(run_dict, artifact_url=None):
 
     head_commit = run_dict.get("head_commit")
     commit_message = head_commit["message"] if head_commit else "No commit message"
+
+    pr_merged = pr_state.get("merged") if pr_state else None
+    pr_state_str = pr_state.get("state") if pr_state else None
 
     return WatchedRunData(
         runId=run_dict["id"],
@@ -391,7 +471,9 @@ def _create_watched_run_data(run_dict, artifact_url=None):
         artifactUrl=artifact_url,
         htmlUrl=run_dict["html_url"],
         owner=run_dict.get("_owner", ""),
-        repo=run_dict.get("_repo", "")
+        repo=run_dict.get("_repo", ""),
+        prMerged=pr_merged,
+        prState=pr_state_str
     )
 
 

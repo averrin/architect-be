@@ -15,3 +15,5 @@ class WatchedRunData(BaseModel):
     htmlUrl: str
     owner: str
     repo: str
+    prMerged: bool | None = None    # PR merged state (if run is linked to a PR)
+    prState: str | None = None      # PR state: open, closed, merged

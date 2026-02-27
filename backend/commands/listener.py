@@ -5,13 +5,15 @@ from commands.ai_commands import handle_ai_command
 from commands.buxfer_commands import handle_buxfer_command
 from commands.github_commands import handle_github_command
 from commands.gtasks_commands import handle_gtasks_command
+from commands.dashboard_commands import handle_dashboard_command
 import asyncio
 
 HANDLERS = {
     "ai": handle_ai_command,
     "buxfer": handle_buxfer_command,
     "github": handle_github_command,
-    "gtasks": handle_gtasks_command
+    "gtasks": handle_gtasks_command,
+    "dashboard": handle_dashboard_command
 }
 
 def process_command_sync(doc_snap):

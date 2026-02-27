@@ -17,6 +17,7 @@ from services.jules import run_jules_job
 from services.forecast import run_forecast_job
 from services.models_sync import run_models_sync_job
 from services.heartbeat import run_fcm_heartbeat_job
+from services.dashboard import run_dashboard_discovery_job, run_dashboard_status_job
 
 settings = get_settings()
 
@@ -28,7 +29,9 @@ JOBS = {
     "jules": run_jules_job,
     "forecast": run_forecast_job,
     "models_sync": run_models_sync_job,
-    "fcm_heartbeat": run_fcm_heartbeat_job
+    "fcm_heartbeat": run_fcm_heartbeat_job,
+    "dashboard_discovery": run_dashboard_discovery_job,
+    "dashboard_status": run_dashboard_status_job
 }
 
 async def run_initial_jobs():
@@ -42,6 +45,8 @@ async def run_initial_jobs():
         if settings.ENABLE_FORECAST_JOB: await run_forecast_job()
         if settings.ENABLE_MODELS_SYNC_JOB: await run_models_sync_job()
         if settings.ENABLE_FCM_HEARTBEAT_JOB: await run_fcm_heartbeat_job()
+        await run_dashboard_discovery_job()
+        await run_dashboard_status_job()
         logger.info("Initial jobs completed.")
     except Exception as e:
         logger.error(f"Error running initial jobs: {e}")
