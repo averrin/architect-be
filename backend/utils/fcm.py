@@ -30,7 +30,7 @@ def send_fcm_message(token: str, data: dict, notification: dict | None = None):
              message.notification = messaging.Notification(**notification)
 
         response = messaging.send(message)
-        logger.debug(f"FCM message sent to {token[:10]}...: {response}")
+        logger.debug(f"FCM message sent to {token[:10]}...: {response} | data={data}")
         return response
     except Exception as e:
         logger.error(f"Failed to send FCM message: {e}")

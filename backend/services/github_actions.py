@@ -225,6 +225,18 @@ async def update_github_watcher(uid: str, user_settings: dict):
             except:
                 pass
 
+            estimated_duration = old_run.get("estimatedDuration", 0) if old_run else 0
+            if status == "completed" and run.get("updated_at") and start_time > 0:
+                try:
+                    updated_dt = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+                    updated_ms = int(updated_dt.timestamp() * 1000)
+                    computed = updated_ms - start_time
+                    if computed > 0:
+                        estimated_duration = computed
+                        logger.debug(f"Run {run_id} completed in {computed // 1000}s, storing as estimatedDuration")
+                except:
+                    pass
+
             watched_runs[run_id] = WatchedRunData(
                 runId=run["id"],
                 name=run["name"],
@@ -232,7 +244,7 @@ async def update_github_watcher(uid: str, user_settings: dict):
                 headCommitMessage=commit_message if head_commit else None,
                 status=status,
                 conclusion=conclusion,
-                estimatedDuration=0,
+                estimatedDuration=estimated_duration,
                 startTime=start_time,
                 lastChecked=current_time_ms,
                 progress=0.0,

@@ -6,6 +6,7 @@ from commands.buxfer_commands import handle_buxfer_command
 from commands.github_commands import handle_github_command
 from commands.gtasks_commands import handle_gtasks_command
 from commands.dashboard_commands import handle_dashboard_command
+from commands.coolify_commands import handle_coolify_command
 import asyncio
 
 HANDLERS = {
@@ -13,7 +14,8 @@ HANDLERS = {
     "buxfer": handle_buxfer_command,
     "github": handle_github_command,
     "gtasks": handle_gtasks_command,
-    "dashboard": handle_dashboard_command
+    "dashboard": handle_dashboard_command,
+    "coolify": handle_coolify_command
 }
 
 def process_command_sync(doc_snap):
@@ -60,7 +62,10 @@ async def process_command(doc_snap):
 
     print(f"Processing {domain} command {cmd_id} for {uid}")
 
-    ref.update({"status": "processing", "updatedAt": firestore.SERVER_TIMESTAMP})
+    try:
+        ref.update({"status": "processing", "updatedAt": firestore.SERVER_TIMESTAMP})
+    except Exception:
+        return
 
     try:
         result = await handler(uid, cmd_id, data)
@@ -74,15 +79,18 @@ async def process_command(doc_snap):
         else:
              ref.update({"result": result})
 
-        ref.update({"status": "completed", "updatedAt": firestore.SERVER_TIMESTAMP})
+        ref.delete()
 
     except Exception as e:
         print(f"Command failed: {e}")
-        ref.update({
-            "status": "failed",
-            "error": str(e),
-            "updatedAt": firestore.SERVER_TIMESTAMP
-        })
+        try:
+            ref.update({
+                "status": "failed",
+                "error": str(e),
+                "updatedAt": firestore.SERVER_TIMESTAMP
+            })
+        except Exception:
+            pass
 
 def on_snapshot(col_snapshot, changes, read_time):
     for change in changes:
@@ -95,7 +103,5 @@ def on_snapshot(col_snapshot, changes, read_time):
 def start_listener():
     db = get_db()
     print("Starting command listener...")
-    for d in db.collection_group('items').stream():
-        print(f"[listener] found doc: {d.reference.path} status={d.to_dict().get('status')}")
     watch = db.collection_group('items').where('status', '==', 'pending').on_snapshot(on_snapshot)
     return watch

@@ -74,13 +74,17 @@ async def fetch_artifact_url(client, owner, repo, token, run_id):
         resp.raise_for_status()
         artifacts = resp.json().get("artifacts", [])
         if artifacts:
-            download_url = artifacts[0]["archive_download_url"]
-            try:
-                async with client.stream("GET", download_url, headers=headers, follow_redirects=True) as response:
-                    return str(response.url)
-            except Exception as e:
-                logger.error(f"Error streaming artifact URL for run {run_id}: {e}")
-                return None
+            # Prefer app-release/app-debug, fall back to first artifact
+            priorities = ["app-release", "app-debug", "release", "debug", "build"]
+            chosen = None
+            for p in priorities:
+                chosen = next((a for a in artifacts if p in a["name"].lower()), None)
+                if chosen:
+                    break
+            if not chosen:
+                chosen = artifacts[0]
+            # Return the stable archive_download_url — the app will handle auth redirect
+            return chosen["archive_download_url"]
         return None
     except Exception as e:
         logger.error(f"GitHub artifact fetch error for run {run_id}: {e}")
@@ -183,6 +187,23 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                 elif res:
                     all_runs.extend(res)
 
+        # 3b. Pre-fetch artifactUrls for completed+success runs (parallel)
+        completed_runs = [
+            r for r in all_runs
+            if r.get("status") == "completed" and r.get("conclusion") == "success"
+        ]
+        artifact_url_map = {}  # run_id -> url
+        if completed_runs:
+            async with httpx.AsyncClient() as client:
+                art_tasks = [
+                    fetch_artifact_url(client, r["_owner"], r["_repo"], github_token, r["id"])
+                    for r in completed_runs
+                ]
+                art_results = await asyncio.gather(*art_tasks, return_exceptions=True)
+                for r, url in zip(completed_runs, art_results):
+                    if isinstance(url, str):
+                        artifact_url_map[r["id"]] = url
+
         logger.debug(f"Fetched {len(all_runs)} GitHub runs for {uid}")
 
         # 4. Fetch PR states for sessions that have a PR number
@@ -253,7 +274,7 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                     for r in repo_runs:
                         prs = r.get("pull_requests", [])
                         if any(pr.get("number") == target_pr for pr in prs):
-                            matched_run = _create_watched_run_data(r, pr_state=pr_state_data)
+                            matched_run = _create_watched_run_data(r, artifact_url=artifact_url_map.get(r["id"]), pr_state=pr_state_data)
                             logger.debug(f"Matched by PR#{target_pr}: run {r.get('id')}")
                             break
                     if not matched_run:
@@ -264,7 +285,7 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
                     candidates = [r for r in repo_runs if r.get("head_branch") == target_branch]
                     if candidates:
                         candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-                        matched_run = _create_watched_run_data(candidates[0], pr_state=pr_state_data)
+                        matched_run = _create_watched_run_data(candidates[0], artifact_url=artifact_url_map.get(candidates[0]["id"]), pr_state=pr_state_data)
                         logger.debug(f"Matched by branch '{target_branch}': run {candidates[0].get('id')}")
                     else:
                         logger.debug(f"No runs found for branch '{target_branch}' in {len(repo_runs)} repo runs")
@@ -282,7 +303,7 @@ async def update_dashboard_discovery(uid: str, user_settings: dict):
         top_master_runs = master_candidates[:5]
 
         for r in top_master_runs:
-            master_runs_data.append(_create_watched_run_data(r))
+            master_runs_data.append(_create_watched_run_data(r, artifact_url=artifact_url_map.get(r["id"])))
 
         # 6. Save Dashboard Data
         dashboard_data = DashboardData(
@@ -363,8 +384,8 @@ async def update_dashboard_status(uid: str, user_settings: dict):
                         item["session"]["updateTime"] = s_new_raw.get("updateTime", "")
 
                         if new_state == "ACTIVE":
-                             if not fcm_token: fcm_token = get_fcm_token(uid, db)
-                             send_fcm_message(fcm_token, {
+                            if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                            send_fcm_message(fcm_token, {
                                 "type": "jules_session",
                                 "status": "active",
                                 "sessionId": sid,
@@ -395,6 +416,8 @@ async def update_dashboard_status(uid: str, user_settings: dict):
 
                             new_status = r_new.get("status")
                             new_conclusion = r_new.get("conclusion")
+                            run_name = r_new.get("name", "")
+                            head_branch = r_new.get("head_branch", "")
 
                             if new_status != old_run["status"] or new_conclusion != old_run["conclusion"]:
                                 updated = True
@@ -418,17 +441,39 @@ async def update_dashboard_status(uid: str, user_settings: dict):
                                         "status": "completed",
                                         "conclusion": new_conclusion,
                                         "runId": str(run_id),
+                                        "runName": run_name,
                                         "repo": repo,
-                                        "name": r_new.get("name"),
-                                        "headBranch": r_new.get("head_branch"),
+                                        "headBranch": head_branch,
                                     }
                                     if artifact_url:
                                         msg_data["artifactUrl"] = artifact_url
 
                                     send_fcm_message(fcm_token, msg_data, notification={
-                                        "title": f"Run {new_conclusion.title()}: {r_new.get('name')}",
+                                        "title": f"Run {new_conclusion.title()}: {run_name}",
                                         "body": f"GitHub Action completed on {repo}"
                                     })
+
+                            elif new_status in ("in_progress", "queued"):
+                                # Run is still active — push progress to client
+                                start_time = old_run.get("startTime", 0)
+                                elapsed_ms = int(time.time() * 1000) - start_time
+                                estimated = old_run.get("estimatedDuration") or 1500000  # 25 min default
+                                progress = min(0.99, elapsed_ms / estimated) if estimated > 0 else 0
+                                percent = round(progress * 100)
+                                remaining_ms = max(0, estimated - elapsed_ms)
+                                remaining_mins = max(1, round(remaining_ms / 60000))
+
+                                if not fcm_token: fcm_token = get_fcm_token(uid, db)
+                                send_fcm_message(fcm_token, {
+                                    "type": "github_run_progress",
+                                    "runId": str(run_id),
+                                    "runName": run_name,
+                                    "headBranch": head_branch,
+                                    "owner": owner,
+                                    "repo": repo,
+                                    "percent": str(percent),
+                                    "remainingMins": str(remaining_mins),
+                                })
 
                     except Exception as e:
                         logger.error(f"Error updating run {run_id}: {e}")
@@ -493,14 +538,65 @@ async def run_dashboard_discovery_job():
         await update_dashboard_discovery(uid, settings_data)
     logger.info("Dashboard Discovery job completed")
 
-async def run_dashboard_status_job():
-    # logger.debug("Starting Dashboard Status job") # Verbose
-    db = get_db()
+def _has_active_items(db) -> list[str]:
+    """Quick Firestore check — returns uids that have active sessions or runs."""
+    active_uids = []
     try:
-        users_with_settings = await asyncio.to_thread(get_active_users, db)
+        users_ref = db.collection("users")
+        for user_doc in users_ref.stream():
+            uid = user_doc.id
+            dashboard_ref = db.document(f"users/{uid}/dashboard/data")
+            doc = dashboard_ref.get()
+            if not doc.exists:
+                continue
+            data = doc.to_dict()
+            found = False
+            for item in data.get("jointSessions", []):
+                s = item.get("session", {})
+                if s.get("state") in ["CREATING", "ACTIVE", "INITIALIZING"]:
+                    found = True
+                    break
+                r = item.get("run")
+                if r and r.get("status") in ["queued", "in_progress"]:
+                    found = True
+                    break
+            if not found:
+                for r in data.get("masterRuns", []):
+                    if r.get("status") in ["queued", "in_progress"]:
+                        found = True
+                        break
+            if found:
+                active_uids.append(uid)
     except Exception as e:
-        logger.error(f"Error getting active users: {e}")
-        return
+        logger.error(f"Error in _has_active_items: {e}")
+    return active_uids
 
-    for uid, settings_data in users_with_settings:
-        await update_dashboard_status(uid, settings_data)
+
+async def run_dashboard_status_job():
+    """Long-running loop: polls only when active items exist, then waits for completion."""
+    db = get_db()
+    while True:
+        try:
+            active_uids = await asyncio.to_thread(_has_active_items, db)
+            if active_uids:
+                try:
+                    users_with_settings = await asyncio.to_thread(get_active_users, db)
+                except Exception as e:
+                    logger.error(f"Error getting active users: {e}")
+                    await asyncio.sleep(settings.DASHBOARD_STATUS_INTERVAL_SECONDS)
+                    continue
+
+                active_uid_set = set(active_uids)
+                for uid, settings_data in users_with_settings:
+                    if uid in active_uid_set:
+                        await update_dashboard_status(uid, settings_data)
+
+                await asyncio.sleep(settings.DASHBOARD_STATUS_INTERVAL_SECONDS)
+            else:
+                await asyncio.sleep(settings.DASHBOARD_DISCOVERY_INTERVAL_MINUTES * 60)
+        except asyncio.CancelledError:
+            logger.info("Dashboard status loop cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error in dashboard status loop: {e}")
+            await asyncio.sleep(settings.DASHBOARD_STATUS_INTERVAL_SECONDS)

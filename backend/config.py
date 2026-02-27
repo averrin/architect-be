@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     ENABLE_MODELS_SYNC_JOB: bool = False
     ENABLE_FCM_HEARTBEAT_JOB: bool = True
     ENABLE_REMINDERS_JOB: bool = True
+    ENABLE_COOLIFY_JOB: bool = True
+
+    # Coolify
+    COOLIFY_URL: str | None = None
+    COOLIFY_API_TOKEN: str | None = None
+    COOLIFY_WATCHER_INTERVAL_SECONDS: int = 15
+    COOLIFY_WATCHER_SLOW_INTERVAL_MINUTES: int = 2
+    COOLIFY_APPS_SLOW_INTERVAL_MINUTES: int = 5
 
     # Optional: Default API keys (fallback if user doesn't provide)
     DEFAULT_GEMINI_API_KEY: str | None = None

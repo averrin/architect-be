@@ -127,10 +127,10 @@ async def _process_reminders(uid: str, db, fcm_token: str, user_tz: str):
             # Send FCM
             send_fcm_message(fcm_token, {
                 "type": "reminder",
-                "reminderId": doc.id,
-                "title": title,
-                "content": content,
-                "reminderTime": reminder_time_str,
+                "reminderId": str(doc.id),
+                "title": str(title),
+                "content": str(content) if content else "",
+                "reminderTime": str(reminder_time_str),
             }, notification={
                 "title": f"🔔 {title}",
                 "body": content or "Reminder"
@@ -214,7 +214,7 @@ async def _process_mood_reminder(uid: str, db, fcm_token: str, user_tz: str):
         # Send FCM
         send_fcm_message(fcm_token, {
             "type": "mood_daily",
-            "date": today_str,
+            "date": str(today_str),
         }, notification={
             "title": "How was your day?",
             "body": "Take a moment to evaluate your day and add a note."
@@ -290,8 +290,8 @@ async def _process_range_notifications(uid: str, db, fcm_token: str, user_tz: st
             title = r.get('title', 'Time Range')
             send_fcm_message(fcm_token, {
                 "type": "range_start",
-                "rangeId": range_id,
-                "title": title,
+                "rangeId": str(range_id),
+                "title": str(title),
             }, notification={
                 "title": title,
                 "body": "Starting now"
