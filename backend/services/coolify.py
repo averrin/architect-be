@@ -103,7 +103,11 @@ async def update_coolify_watcher(uid: str, user_settings: dict):
         app_name = d.get("application_name") or d.get("applicationName") or "Unknown App"
         server_name = d.get("server_name") or d.get("serverName") or ""
         commit_msg = d.get("commit_message") or d.get("commitMessage") or ""
-        deployment_url = d.get("deployment_url") or d.get("deploymentUrl") or ""
+        raw_url = d.get("deployment_url") or d.get("deploymentUrl") or ""
+        if raw_url and not raw_url.startswith("http"):
+            deployment_url = f"{host.rstrip('/')}{raw_url}"
+        else:
+            deployment_url = raw_url
 
         if notify_start:
             if not fcm_token: fcm_token = get_fcm_token(uid, db)
@@ -162,12 +166,11 @@ async def update_coolify_watcher(uid: str, user_settings: dict):
             lastChecked=current_ms,
         ).model_dump()
 
-    if new_deployments:
-        ref.set({
-            "deployments": new_deployments,
-            "updatedAt": firestore.SERVER_TIMESTAMP
-        })
-        logger.info(f"Coolify deployments updated for {uid}: {len(new_deployments)} tracked (sent {notifications_sent} notifications)")
+    ref.set({
+        "deployments": new_deployments,
+        "updatedAt": firestore.SERVER_TIMESTAMP
+    })
+    logger.info(f"Coolify deployments updated for {uid}: {len(new_deployments)} tracked (sent {notifications_sent} notifications)")
 
 async def fetch_coolify_applications(client: httpx.AsyncClient, host: str, token: str) -> list[dict]:
     url = f"{host.rstrip('/')}/api/v1/applications"
@@ -183,7 +186,7 @@ async def fetch_coolify_applications(client: httpx.AsyncClient, host: str, token
         logger.error(f"Coolify applications fetch error ({host}): {e}")
         return []
 
-async def update_coolify_applications(uid: str, host: str, token: str):
+async def update_coolify_applications(uid: str, host: str, token: str, force: bool = False):
     db = get_db()
     ref = db.document(f"users/{uid}/coolify/applications")
     snap = ref.get()
@@ -196,7 +199,7 @@ async def update_coolify_applications(uid: str, host: str, token: str):
 
     current_ts = time.time()
     time_diff = current_ts - last_updated
-    if time_diff < (settings.COOLIFY_APPS_SLOW_INTERVAL_MINUTES * 60):
+    if not force and time_diff < (settings.COOLIFY_APPS_SLOW_INTERVAL_MINUTES * 60):
         logger.debug(f"Skipping Coolify apps poll for {uid} ({int(time_diff)}s ago)")
         return
 

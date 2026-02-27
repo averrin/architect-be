@@ -27,7 +27,7 @@ async def handle_coolify_command(uid: str, cmd_id: str, data: dict):
             raise ValueError("appUuid is required")
         result = await control_coolify_application(host, token, app_uuid, action)
         logger.info(f"Coolify {action} triggered for app {app_uuid} by {uid}: {result}")
-        await update_coolify_applications(uid, host, token)
+        await update_coolify_applications(uid, host, token, force=True)
         return {"status": action, "result": result}
 
     raise ValueError(f"Unknown coolify action: {action}")
