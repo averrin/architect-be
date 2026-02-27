@@ -95,6 +95,7 @@ def on_snapshot(col_snapshot, changes, read_time):
 def start_listener():
     db = get_db()
     print("Starting command listener...")
-    # Listen to all 'commands' collections
-    watch = db.collection_group('commands').where('status', '==', 'pending').on_snapshot(on_snapshot)
+    for d in db.collection_group('items').stream():
+        print(f"[listener] found doc: {d.reference.path} status={d.to_dict().get('status')}")
+    watch = db.collection_group('items').where('status', '==', 'pending').on_snapshot(on_snapshot)
     return watch
