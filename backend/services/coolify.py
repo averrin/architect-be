@@ -18,7 +18,6 @@ async def fetch_coolify_deployments(client: httpx.AsyncClient, host: str, token:
         resp = await client.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        print(data)
         if isinstance(data, list):
             return data
         return []
@@ -68,9 +67,6 @@ async def update_coolify_watcher(uid: str, user_settings: dict):
 
     async with httpx.AsyncClient() as client:
         raw = await fetch_coolify_deployments(client, host, token)
-
-    if not raw and not has_active:
-        return
 
     current_ms = int(current_ts * 1000)
     new_deployments: dict = {}
@@ -166,11 +162,21 @@ async def update_coolify_watcher(uid: str, user_settings: dict):
             lastChecked=current_ms,
         ).model_dump()
 
-    ref.set({
-        "deployments": new_deployments,
-        "updatedAt": firestore.SERVER_TIMESTAMP
-    })
-    logger.info(f"Coolify deployments updated for {uid}: {len(new_deployments)} tracked (sent {notifications_sent} notifications)")
+    new_keys = set(new_deployments.keys())
+    old_keys = set(old_deployments.keys())
+    deployments_changed = new_keys != old_keys or any(
+        new_deployments[k]["status"] != old_deployments.get(k, {}).get("status")
+        for k in new_keys
+    )
+
+    if deployments_changed or not raw:
+        ref.set({
+            "deployments": new_deployments,
+            "updatedAt": firestore.SERVER_TIMESTAMP
+        })
+        logger.info(f"Coolify deployments updated for {uid}: {len(new_deployments)} tracked (sent {notifications_sent} notifications)")
+
+    return deployments_changed
 
 async def fetch_coolify_applications(client: httpx.AsyncClient, host: str, token: str) -> list[dict]:
     url = f"{host.rstrip('/')}/api/v1/applications"
@@ -185,6 +191,39 @@ async def fetch_coolify_applications(client: httpx.AsyncClient, host: str, token
     except Exception as e:
         logger.error(f"Coolify applications fetch error ({host}): {e}")
         return []
+
+async def fetch_coolify_env_map(client: httpx.AsyncClient, host: str, token: str) -> dict[int, dict]:
+    url = f"{host.rstrip('/')}/api/v1/projects"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    env_map = {}
+    try:
+        resp = await client.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        projects = resp.json()
+        if not isinstance(projects, list):
+            return {}
+        for p in projects:
+            p_uuid = p.get("uuid")
+            if not p_uuid:
+                continue
+            p_env_url = f"{host.rstrip('/')}/api/v1/projects/{p_uuid}/environments"
+            try:
+                env_resp = await client.get(p_env_url, headers=headers, timeout=15)
+                env_resp.raise_for_status()
+                envs = env_resp.json()
+                if isinstance(envs, list):
+                    for env in envs:
+                        env_id = env.get("id")
+                        if env_id:
+                            env_map[env_id] = {
+                                "projectUuid": p_uuid,
+                                "environmentUuid": env.get("uuid")
+                            }
+            except Exception as e:
+                logger.debug(f"Failed to fetch envs for project {p_uuid}: {e}")
+    except Exception as e:
+        logger.error(f"Coolify projects fetch error ({host}): {e}")
+    return env_map
 
 async def update_coolify_applications(uid: str, host: str, token: str, force: bool = False):
     db = get_db()
@@ -207,26 +246,52 @@ async def update_coolify_applications(uid: str, host: str, token: str, force: bo
 
     async with httpx.AsyncClient() as client:
         raw = await fetch_coolify_applications(client, host, token)
+        env_map = await fetch_coolify_env_map(client, host, token) if raw else {}
 
     if not raw:
         return
 
     current_ms = int(current_ts * 1000)
+    old_apps: dict = snap.to_dict().get("applications", {}) if snap.exists else {}
     apps: dict = {}
+    fcm_token = None
 
     for a in raw:
         uuid = a.get("uuid")
         if not uuid:
             continue
+        status = a.get("status") or "unknown"
+        name = a.get("name") or uuid
+        old_status = old_apps.get(uuid, {}).get("status")
+
+        if old_status is not None and old_status != status:
+            if not fcm_token: fcm_token = get_fcm_token(uid, db)
+            logger.info(f"Coolify app {name} status: {old_status} → {status}")
+            send_fcm_message(fcm_token, {
+                "type": "coolify_app",
+                "appUuid": uuid,
+                "applicationName": name,
+                "status": status,
+                "previousStatus": old_status,
+            }, notification={
+                "title": f"{name}: {status.title()}",
+                "body": f"Was {old_status}"
+            })
+
+        env_id = a.get("environment_id")
+        mapped_env = env_map.get(env_id, {}) if env_id else {}
+
         apps[uuid] = CoolifyApplication(
             id=a.get("id", 0),
             uuid=uuid,
-            name=a.get("name") or uuid,
+            name=name,
             fqdn=a.get("fqdn"),
-            status=a.get("status") or "unknown",
+            status=status,
             gitRepository=a.get("git_repository"),
             gitBranch=a.get("git_branch"),
             buildPack=a.get("build_pack"),
+            projectUuid=mapped_env.get("projectUuid"),
+            environmentUuid=mapped_env.get("environmentUuid"),
             lastChecked=current_ms,
         ).model_dump()
 
@@ -264,7 +329,7 @@ async def run_coolify_job():
         token = settings_data.get("coolifyToken") or settings.COOLIFY_API_TOKEN
         if not host or not token:
             continue
-        await update_coolify_watcher(uid, settings_data)
-        await update_coolify_applications(uid, host, token)
+        deployments_changed = await update_coolify_watcher(uid, settings_data)
+        await update_coolify_applications(uid, host, token, force=deployments_changed)
 
     logger.info("Coolify job completed")

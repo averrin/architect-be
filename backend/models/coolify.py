@@ -9,6 +9,8 @@ class CoolifyApplication(BaseModel):
     gitRepository: str | None
     gitBranch: str | None
     buildPack: str | None
+    projectUuid: str | None = None
+    environmentUuid: str | None = None
     lastChecked: int
 
 class CoolifyDeployment(BaseModel):
